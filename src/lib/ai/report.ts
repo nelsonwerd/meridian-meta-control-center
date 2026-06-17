@@ -111,9 +111,13 @@ function composeNarrative(
   const roas = kpis.roas
   const ordersDir = orders.delta >= 0 ? 'up' : 'down'
   const cpaDir = cpa.delta <= 0 ? 'lower' : 'higher'
+  // a "flat" week — neither orders nor CPA moved meaningfully — reads as steady,
+  // not "growth" (the deep-dive flagged a flat week mislabeled "Efficient growth").
+  const flat = Math.abs(orders.deltaPct) < 0.03 && Math.abs(cpa.deltaPct) < 0.03
 
-  const headline =
-    cpa.delta <= 0 && orders.delta >= 0
+  const headline = flat
+    ? `Steady week — holding course`
+    : cpa.delta <= 0 && orders.delta >= 0
       ? `Efficient growth — more orders at a lower CPA`
       : cpa.delta > 0 && orders.delta < 0
         ? `Soft week — orders and efficiency both slipped`

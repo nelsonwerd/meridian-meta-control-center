@@ -34,6 +34,9 @@ export function DateRangeMenu() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Select date range"
         className="flex items-center gap-2 rounded-xl border border-line bg-surface-2 px-3 py-2 text-sm font-medium text-ink transition-colors hover:border-line-strong hover:bg-surface-3 focus-ring"
       >
         <Calendar className="h-4 w-4 text-ink-subtle" />

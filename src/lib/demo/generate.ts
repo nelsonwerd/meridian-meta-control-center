@@ -459,12 +459,16 @@ function generateInsights(client: Client, plans: AdPlan[], dates: ISODate[]): In
   // CPA = CPM / (1000 * CTR * CVR)  →  CVR = CPM / (1000 * targetCPA * CTR)
   const baseCVR = clamp(baseCPM / (1000 * client.targetCPA * baseCTR), 0.006, 0.075)
   const out: Insight[] = []
+  // No delivery before the client onboarded — keeps a genuinely-new client's
+  // history short instead of fabricating a full 90-day record.
+  const clientStartIdx = dates.findIndex((d) => d >= client.startDate)
+  const startGate = clientStartIdx < 0 ? 0 : clientStartIdx
 
   for (const p of plans) {
     const tr = trends(p.archetype)
     const drng = rngFor('daily', p.ad.id)
     for (let i = 0; i < dates.length; i++) {
-      if (i < p.activeFrom || i > p.activeTo) continue
+      if (i < Math.max(p.activeFrom, startGate) || i > p.activeTo) continue
       const date = dates[i]
       const t = i / (WINDOW_DAYS - 1)
       // weekly seasonality: weekends slightly cheaper traffic, mid-week stronger
@@ -472,7 +476,10 @@ function generateInsights(client: Client, plans: AdPlan[], dates: ISODate[]): In
       const season = 1 + (dow === 0 || dow === 6 ? -0.08 : 0.04) + 0.03 * Math.sin(i / 6)
       const jit = (s: number) => jitter(drng, s)
 
-      const cpm = clamp(baseCPM * tr.cpm(t) * season * jit(p.volatility), 4, 60)
+      // Seeded "what changed overnight" event: one client's auction cost spikes in
+      // the last 3 days (drives a recent CPM/CPA anomaly the watchtower surfaces).
+      const recentShock = client.id === 'c_vela' && i >= WINDOW_DAYS - 3 ? 1.5 : 1
+      const cpm = clamp(baseCPM * tr.cpm(t) * season * recentShock * jit(p.volatility), 4, 60)
       const ctr = clamp(baseCTR * p.profile.ctrQuality * tr.ctr(t) * jit(p.volatility), 0.0018, 0.06)
       const cvr = clamp(baseCVR * p.profile.cvrQuality * tr.cvr(t) * jit(p.volatility * 0.8), 0.003, 0.09)
 

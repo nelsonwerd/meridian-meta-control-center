@@ -49,6 +49,7 @@ export function fmtMultiplier(v: number): string {
 
 /** Format a KPI value by its metric key, for generic rendering. */
 export function fmtMetric(key: string, v: number): string {
+  if (!isFinite(v)) return '—'
   switch (key) {
     case 'spend':
     case 'revenue':

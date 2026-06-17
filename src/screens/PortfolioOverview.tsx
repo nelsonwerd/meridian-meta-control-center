@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowUpRight, Sparkles, TrendingUp } from 'lucide-react'
+import { ArrowUpRight, ChevronRight, Gauge, Radar, Sparkles, TrendingUp, Zap } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { KpiRow } from '../components/blocks/KpiRow'
 import { PerformanceTrendCard } from '../components/blocks/PerformanceTrendCard'
@@ -21,7 +21,7 @@ import { analyzeScope } from '../lib/ai/engine'
 import { fmtCurrency, fmtNumber, fmtPercent, fmtRoas } from '../lib/format'
 import { seriesColor } from '../lib/palette'
 import { cn } from '../lib/cn'
-import type { Scope } from '../lib/types'
+import type { Scope, Suggestion } from '../lib/types'
 
 export function PortfolioOverview({ scope }: { scope: Scope }) {
   const snapshot = useSnapshot()!
@@ -47,11 +47,14 @@ export function PortfolioOverview({ scope }: { scope: Scope }) {
         return { client: c, m, mp, spark: cts.map((p) => p.spend) }
       })
       .sort((a, b) => b.m.spend - a.m.spend)
-    const suggestions = analyzeScope(snapshot, scope).filter((s) => !dismissed.has(s.id) && !applied.has(s.id))
+    const allSug = analyzeScope(snapshot, scope).filter((s) => !dismissed.has(s.id) && !applied.has(s.id))
+    const isWatch = (t: string) => t === 'PACING_ALERT' || t === 'ANOMALY'
+    const watchtower = allSug.filter((s) => isWatch(s.type))
+    const suggestions = allSug.filter((s) => !isWatch(s.type))
     const allocation = clientRows
       .filter((r) => r.m.spend > 0)
       .map((r, i) => ({ label: r.client.name, value: r.m.spend, color: r.client.accentColor || seriesColor(i) }))
-    return { current, previous, series, clientRows, suggestions, allocation }
+    return { current, previous, series, clientRows, suggestions, watchtower, allocation }
   }, [snapshot, scope, range, dismissed, applied])
 
   const critical = data.suggestions.filter((s) => s.severity === 'critical' || s.severity === 'high').length
@@ -76,6 +79,8 @@ export function PortfolioOverview({ scope }: { scope: Scope }) {
         series={data.series}
         keys={['spend', 'purchases', 'cpa', 'roas']}
       />
+
+      {data.watchtower.length > 0 && <Watchtower alerts={data.watchtower} onClient={(id) => setScope({ kind: 'client', clientId: id })} />}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
@@ -170,6 +175,52 @@ export function PortfolioOverview({ scope }: { scope: Scope }) {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/** "What changed overnight" — pacing + anomaly alerts surfaced on the home screen. */
+function Watchtower({ alerts, onClient }: { alerts: Suggestion[]; onClient: (id: string) => void }) {
+  const snapshot = useSnapshot()!
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex items-center gap-2.5 border-b border-line px-5 py-3.5">
+        <span className="grid h-7 w-7 place-items-center rounded-lg bg-brand/12 text-brand">
+          <Radar className="h-4 w-4" />
+        </span>
+        <SectionHeader title="Watchtower" subtitle="What changed overnight — pacing & anomalies" />
+        <span className="ml-auto chip">{alerts.length}</span>
+      </div>
+      <div className="grid gap-px bg-line sm:grid-cols-2 lg:grid-cols-3">
+        {alerts.map((a) => {
+          const client = snapshot.clients.find((c) => c.id === a.clientId)
+          const Icon = a.type === 'PACING_ALERT' ? Gauge : Zap
+          return (
+            <button
+              key={a.id}
+              onClick={() => onClient(a.clientId)}
+              className="flex items-start gap-3 bg-surface p-4 text-left transition-colors hover:bg-surface-2"
+            >
+              <span
+                className={cn(
+                  'mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg',
+                  a.severity === 'critical' ? 'bg-danger/10 text-danger' : a.severity === 'high' ? 'bg-warning/10 text-warning' : 'bg-info/10 text-info',
+                )}
+              >
+                <Icon className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium leading-snug text-ink">{a.title}</span>
+                <span className="mt-1 flex items-center gap-1.5 text-2xs text-ink-subtle">
+                  {client && <Avatar monogram={client.monogram} color={client.accentColor} size={14} />}
+                  {client?.name}
+                </span>
+              </span>
+              <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-ink-subtle" />
+            </button>
+          )
+        })}
       </div>
     </div>
   )

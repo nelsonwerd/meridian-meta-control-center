@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { ChevronRight, Layers3, Search, Sparkles } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { Avatar, Chip, EmptyState, Segmented, StatusBadge, Tooltip } from '../components/ui/primitives'
@@ -108,6 +109,7 @@ export function Campaigns() {
                       level="campaign"
                       depth={0}
                       name={c.name}
+                      entityId={c.id}
                       sub={
                         <span className="flex items-center gap-1.5">
                           <Chip className="px-1.5 py-0 text-2xs">{CAMPAIGN_KIND_LABEL[c.kind]}</Chip>
@@ -134,6 +136,7 @@ export function Campaigns() {
                               level="adset"
                               depth={1}
                               name={as.name}
+                              entityId={as.id}
                               sub={<span className="text-2xs text-ink-subtle">{OPT_GOAL_LABEL[as.optimizationGoal]} · {as.audience.label}</span>}
                               status={as.status}
                               budget={as.dailyBudget}
@@ -154,6 +157,7 @@ export function Campaigns() {
                                     level="ad"
                                     depth={2}
                                     name={ad.name}
+                                    entityId={ad.id}
                                     sub={cr ? <span className="text-2xs text-ink-subtle">{cr.format} · {cr.angle}</span> : undefined}
                                     status={ad.status}
                                     budget={null}
@@ -180,6 +184,7 @@ export function Campaigns() {
 function Row({
   depth,
   name,
+  entityId,
   sub,
   client,
   status,
@@ -194,6 +199,7 @@ function Row({
   level: EntityLevel
   depth: number
   name: string
+  entityId: string
   sub?: React.ReactNode
   client?: { monogram: string; accentColor: string; name: string }
   status: EntityStatus
@@ -228,8 +234,10 @@ function Row({
             <div className={cn('flex items-center gap-1.5 truncate', depth === 0 ? 'font-medium text-ink' : 'text-ink-muted')}>
               {name}
               {flagged ? (
-                <Tooltip label={`${flagged} AI recommendation${flagged > 1 ? 's' : ''}`}>
-                  <Sparkles className="h-3.5 w-3.5 text-brand" />
+                <Tooltip label={`${flagged} AI recommendation${flagged > 1 ? 's' : ''} — view`}>
+                  <Link to={`/recommendations?entity=${entityId}`} className="text-brand hover:text-brand/80" aria-label="View AI recommendations for this entity">
+                    <Sparkles className="h-3.5 w-3.5" />
+                  </Link>
                 </Tooltip>
               ) : null}
             </div>

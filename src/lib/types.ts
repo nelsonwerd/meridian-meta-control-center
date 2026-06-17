@@ -256,6 +256,8 @@ export type SuggestionType =
   | 'NEW_CREATIVE_ANGLE'
   | 'FIX_LANDING_OFFER'
   | 'EXPAND_AUDIENCE'
+  | 'PACING_ALERT'
+  | 'ANOMALY'
   | 'WATCH'
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low'

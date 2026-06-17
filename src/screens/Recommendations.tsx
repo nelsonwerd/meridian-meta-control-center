@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { CheckCircle2, History, Sparkles } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { CheckCircle2, History, Sparkles, X } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { SuggestionCard } from '../components/blocks/SuggestionCard'
 import { EmptyState, Segmented, SectionHeader } from '../components/ui/primitives'
@@ -29,13 +30,20 @@ export function Recommendations() {
   const [sev, setSev] = useState<SevFilter>('all')
   const [group, setGroup] = useState<GroupFilter>('all')
   const [sort, setSort] = useState<'priority' | 'impact'>('priority')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const entityFilter = searchParams.get('entity')
 
   // Retire applied + dismissed suggestions from the live feed (they move to the
   // Activity log) so the list and the severity counts stay honest after Apply.
+  // When deep-linked from a Campaigns/dashboard flag, scope to that one entity.
   const all = useMemo(
-    () => analyzeScope(snapshot, scope).filter((s) => !dismissed.has(s.id) && !appliedIds.has(s.id)),
-    [snapshot, scope, dismissed, appliedIds],
+    () =>
+      analyzeScope(snapshot, scope).filter(
+        (s) => !dismissed.has(s.id) && !appliedIds.has(s.id) && (!entityFilter || s.entityId === entityFilter),
+      ),
+    [snapshot, scope, dismissed, appliedIds, entityFilter],
   )
+  const entityName = entityFilter ? (all[0]?.entityName ?? 'selected entity') : null
 
   const counts = useMemo(() => {
     const c = { critical: 0, high: 0, medium: 0, low: 0 }
@@ -62,6 +70,20 @@ export function Recommendations() {
           </span>
         }
       />
+
+      {entityFilter && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-brand/30 bg-brand/10 px-4 py-2.5">
+          <span className="text-sm text-ink">
+            Filtered to <span className="font-semibold">{entityName}</span> — {all.length} recommendation{all.length === 1 ? '' : 's'}
+          </span>
+          <button
+            onClick={() => setSearchParams({})}
+            className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-brand hover:bg-brand/10"
+          >
+            <X className="h-3.5 w-3.5" /> Clear filter
+          </button>
+        </div>
+      )}
 
       {/* summary tiles */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

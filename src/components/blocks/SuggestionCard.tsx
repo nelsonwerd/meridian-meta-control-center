@@ -4,6 +4,7 @@ import {
   Combine,
   Eye,
   Flame,
+  Gauge,
   Lightbulb,
   PauseCircle,
   Scissors,
@@ -11,6 +12,7 @@ import {
   TrendingUp,
   Wrench,
   X,
+  Zap,
 } from 'lucide-react'
 import { useState, type ComponentType } from 'react'
 import { cn } from '../../lib/cn'
@@ -23,12 +25,14 @@ const META: Record<SuggestionType, { label: string; icon: ComponentType<{ classN
   SCALE_BUDGET: { label: 'Scale', icon: TrendingUp, tone: 'text-success bg-success/10' },
   CUT_BUDGET: { label: 'Cut', icon: Scissors, tone: 'text-warning bg-warning/10' },
   PAUSE_ENTITY: { label: 'Pause', icon: PauseCircle, tone: 'text-danger bg-danger/10' },
-  CREATIVE_FATIGUE: { label: 'Fatigue', icon: Flame, tone: 'text-amber bg-warning/10' },
+  CREATIVE_FATIGUE: { label: 'Fatigue', icon: Flame, tone: 'text-warning bg-warning/10' },
   CONSOLIDATE_ADSETS: { label: 'Consolidate', icon: Combine, tone: 'text-info bg-info/10' },
   REALLOCATE_SPEND: { label: 'Reallocate', icon: Shuffle, tone: 'text-info bg-info/10' },
   NEW_CREATIVE_ANGLE: { label: 'New angle', icon: Lightbulb, tone: 'text-brand bg-brand/10' },
   FIX_LANDING_OFFER: { label: 'Fix offer', icon: Wrench, tone: 'text-warning bg-warning/10' },
   EXPAND_AUDIENCE: { label: 'Expand', icon: ArrowRight, tone: 'text-info bg-info/10' },
+  PACING_ALERT: { label: 'Pacing', icon: Gauge, tone: 'text-info bg-info/10' },
+  ANOMALY: { label: 'Anomaly', icon: Zap, tone: 'text-danger bg-danger/10' },
   WATCH: { label: 'Watch', icon: Eye, tone: 'text-ink-muted bg-surface-3' },
 }
 

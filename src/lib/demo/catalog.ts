@@ -121,7 +121,7 @@ export const CLIENTS: Client[] = [
     targetROAS: 2.1,
     avgOrderValue: 79,
     contributionMargin: 0.58,
-    startDate: '2025-05-05',
+    startDate: '2026-06-03', // genuinely onboarding — ~2 weeks of history only
   },
 ]
 

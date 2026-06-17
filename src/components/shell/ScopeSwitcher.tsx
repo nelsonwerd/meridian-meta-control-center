@@ -32,6 +32,9 @@ export function ScopeSwitcher() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Switch client or business manager"
         className="flex items-center gap-2.5 rounded-xl border border-line bg-surface-2 py-1.5 pl-2 pr-2.5 text-left transition-colors hover:border-line-strong hover:bg-surface-3 focus-ring"
       >
         {current.avatar}

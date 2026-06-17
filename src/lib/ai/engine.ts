@@ -10,9 +10,9 @@ import type {
   Suggestion,
   SuggestionType,
 } from '../types'
-import { today } from '../metrics'
+import { aggregate, daysBetween, filterByRange, today } from '../metrics'
 import { clamp } from '../rng'
-import { adIdsForClient, clientsForScope, lastNDays, metricsForAdIds } from '../selectors'
+import { adIdsForClient, clientsForScope, insightsForAdIds, lastNDays, metricsForAdIds } from '../selectors'
 import { THRESHOLDS as T } from './thresholds'
 
 /* ============================================================================
@@ -250,10 +250,105 @@ function analyzeReallocation(ds: Dataset, client: Client): Suggestion | null {
   })
 }
 
+/** Client-level budget pacing alert (over/under run-rate vs the monthly budget). */
+function analyzePacing(ds: Dataset, client: Client): Suggestion | null {
+  const adIds = adIdsForClient(ds, client.id)
+  const monthStart = today().slice(0, 8) + '01'
+  const mtd = aggregate(filterByRange(insightsForAdIds(ds, adIds), { preset: 'custom', start: monthStart, end: today(), label: '' }))
+  const dayOfMonth = daysBetween(monthStart, today()) + 1
+  const daysInMonth = new Date(Date.UTC(Number(today().slice(0, 4)), Number(today().slice(5, 7)), 0)).getUTCDate()
+  const projection = (mtd.spend / Math.max(1, dayOfMonth)) * daysInMonth
+  const pace = client.monthlyBudget > 0 ? projection / client.monthlyBudget : 1
+  const recent = metricsForAdIds(ds, adIds, lastNDays(7))
+  const onTarget = recent.cpa > 0 && recent.cpa <= client.targetCPA
+  if (pace >= 1.12) {
+    const overDaily = (projection - client.monthlyBudget) / daysInMonth
+    return build('PACING_ALERT', 'high', 'client', client.id, client.name, client.id, {
+      title: `Pacing ${((pace - 1) * 100).toFixed(0)}% over budget`,
+      rationale: `At the current run-rate, ${client.name} is projected to spend ${money(projection)} this month vs the ${money(client.monthlyBudget)} budget — ${((pace - 1) * 100).toFixed(0)}% over. ${onTarget ? 'CPA is in-target, so this may be intentional scaling — confirm the extra budget is approved.' : 'CPA is above target, so the overspend is buying expensive orders — pull daily budgets back.'}`,
+      evidence: [`Projected ${money(projection)}`, `Budget ${money(client.monthlyBudget)}`, `MTD ${money(mtd.spend)}`, `Day ${dayOfMonth}/${daysInMonth}`],
+      impact: { metric: 'Budget control', change: -(pace - 1), note: `~${money(overDaily)}/day over` },
+      confidence: 0.8,
+      impactScore: Math.abs(overDaily),
+      action: { kind: 'none', label: 'Review pacing', targetEntityId: client.id, targetLevel: 'client' },
+    })
+  }
+  if (pace <= 0.85 && onTarget) {
+    const underMo = client.monthlyBudget - projection
+    return build('PACING_ALERT', 'medium', 'client', client.id, client.name, client.id, {
+      title: `Under-pacing ${((1 - pace) * 100).toFixed(0)}% with in-target CPA`,
+      rationale: `${client.name} is projected to spend ${money(projection)} vs the ${money(client.monthlyBudget)} budget — leaving ~${money(underMo)} unused — while CPA (${money(recent.cpa)}) is at or below the ${money(client.targetCPA)} target. There's headroom to scale winning campaigns into the unused budget.`,
+      evidence: [`Projected ${money(projection)}`, `Budget ${money(client.monthlyBudget)}`, `CPA ${money(recent.cpa)} ≤ ${money(client.targetCPA)}`],
+      impact: { metric: '+Growth room', change: 0.1, note: `~${money(underMo)} unused` },
+      confidence: 0.7,
+      impactScore: Math.abs(underMo / daysInMonth),
+      action: { kind: 'none', label: 'Open scaling', targetEntityId: client.id, targetLevel: 'client' },
+    })
+  }
+  return null
+}
+
+/** Client-level "what changed overnight" anomalies: tracking break, CPA blowout,
+ *  CPM spike — last 3 days vs the prior week. */
+function analyzeAnomalies(ds: Dataset, client: Client): Suggestion[] {
+  const out: Suggestion[] = []
+  const adIds = adIdsForClient(ds, client.id)
+  const recent = metricsForAdIds(ds, adIds, lastNDays(3))
+  const base = metricsForAdIds(ds, adIds, lastNDays(7, 3)) // days 4–10
+  // tracking break — spend continuing, conversions collapsed to zero
+  if (base.purchases >= 20 && recent.spend >= (base.spend / 7) * 2 && recent.purchases === 0) {
+    out.push(
+      build('ANOMALY', 'critical', 'client', client.id, client.name, client.id, {
+        title: `Possible conversion tracking break`,
+        rationale: `${client.name} spent ${money(recent.spend)} in the last 3 days but recorded 0 orders, after healthy volume the prior week (${fmtInt(base.purchases)} orders). Spend is flowing while conversions stopped — a classic pixel/CAPI break. Verify the conversion setup before judging any ads.`,
+        evidence: [`0 orders/3d`, `${money(recent.spend)} spent/3d`, `prior ${fmtInt(base.purchases)} orders/7d`],
+        impact: { metric: 'Data integrity', change: -1, note: 'verify pixel/CAPI' },
+        confidence: 0.7,
+        impactScore: recent.spend / 3,
+        action: { kind: 'none', label: 'Investigate', targetEntityId: client.id, targetLevel: 'client' },
+      }),
+    )
+    return out // a tracking break supersedes the metric anomalies below
+  }
+  // CPA blowout
+  if (recent.purchases >= 5 && base.cpa > 0 && recent.cpa > base.cpa * 1.2) {
+    const up = (recent.cpa / base.cpa - 1) * 100
+    out.push(
+      build('ANOMALY', 'high', 'client', client.id, client.name, client.id, {
+        title: `CPA up ${up.toFixed(0)}% in the last 3 days`,
+        rationale: `${client.name}'s 3-day CPA (${money(recent.cpa)}) jumped ${up.toFixed(0)}% versus the prior week (${money(base.cpa)}). Something shifted recently — a fatiguing winner, rising auction costs, or a landing/offer change. Drill in before it compounds.`,
+        evidence: [`3d CPA ${money(recent.cpa)}`, `prior ${money(base.cpa)}`, `+${up.toFixed(0)}%`],
+        impact: { metric: '−Efficiency', change: -(up / 100), note: 'recent regression' },
+        confidence: 0.66,
+        impactScore: (recent.spend / 3) * 0.3,
+        action: { kind: 'none', label: 'Investigate', targetEntityId: client.id, targetLevel: 'client' },
+      }),
+    )
+  } else if (base.cpm > 0 && recent.cpm > base.cpm * 1.25 && recent.impressions > 5000) {
+    // CPM spike (only when CPA didn't already fire, to avoid double-alerting)
+    const up = (recent.cpm / base.cpm - 1) * 100
+    out.push(
+      build('ANOMALY', 'medium', 'client', client.id, client.name, client.id, {
+        title: `CPM spiked ${up.toFixed(0)}% this week`,
+        rationale: `Auction costs for ${client.name} rose sharply — 3-day CPM (${money(recent.cpm)}) is up ${up.toFixed(0)}% vs the prior week (${money(base.cpm)}). Rising CPM at steady CTR inflates CPA; check frequency/saturation and whether new competitors entered the auction.`,
+        evidence: [`3d CPM ${money(recent.cpm)}`, `prior ${money(base.cpm)}`, `+${up.toFixed(0)}%`],
+        impact: { metric: 'Auction cost', change: -(up / 100), note: 'rising CPM' },
+        confidence: 0.6,
+        impactScore: (recent.spend / 3) * 0.2,
+        action: { kind: 'none', label: 'Investigate', targetEntityId: client.id, targetLevel: 'client' },
+      }),
+    )
+  }
+  return out
+}
+
 export function analyzeClient(ds: Dataset, clientId: string): Suggestion[] {
   const client = ds.clientById.get(clientId)
   if (!client) return []
   const out: Suggestion[] = []
+  const pacing = analyzePacing(ds, client)
+  if (pacing) out.push(pacing)
+  out.push(...analyzeAnomalies(ds, client))
   for (const adId of adIdsForClient(ds, clientId)) {
     const ad = ds.adById.get(adId)!
     const s = analyzeAd(ds, ad, client)
