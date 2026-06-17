@@ -15,6 +15,8 @@ export interface Toast {
   id: string
   kind: 'success' | 'info' | 'error'
   message: string
+  /** optional inline action (e.g. Undo) */
+  action?: { label: string; onClick: () => void }
 }
 
 export interface AppliedAction {
@@ -52,7 +54,7 @@ interface MeridianState {
   toggleTheme: () => void
   applySuggestion: (s: Suggestion) => Promise<void>
   dismissSuggestion: (id: string) => void
-  pushToast: (kind: Toast['kind'], message: string) => void
+  pushToast: (kind: Toast['kind'], message: string, action?: Toast['action']) => void
   removeToast: (id: string) => void
 }
 
@@ -123,23 +125,33 @@ export const useStore = create<MeridianState>((set, get) => ({
       get().dismissSuggestion(s.id)
       return
     }
+    // Capture the entity's prior state so the change is reversible.
+    const restore = captureRestore(snapshot, req)
     try {
       const res = await provider.applyAction(req, snapshot)
       if (res.ok) {
-        set((st) => ({
-          version: st.version + 1,
-          // Clone the snapshot reference so every [snapshot]-keyed useMemo
-          // re-derives from the now-mutated entities (dashboards, counts, flags
-          // all reflect the change). The index Maps are shared by reference and
-          // contain the in-place-mutated entities, so the re-read sees fresh data.
-          snapshot: st.snapshot ? { ...st.snapshot } : st.snapshot,
+        bumpSnapshot(set, (st) => ({
           appliedSuggestionIds: new Set(st.appliedSuggestionIds).add(s.id),
           applied: [
             { id: genId(), title: s.title, message: res.message, ts: Date.now(), suggestionId: s.id },
             ...st.applied,
           ].slice(0, 50),
         }))
-        get().pushToast('success', res.message)
+        const undo = restore
+          ? {
+              label: 'Undo',
+              onClick: () => {
+                restore()
+                bumpSnapshot(set, (st) => {
+                  const ids = new Set(st.appliedSuggestionIds)
+                  ids.delete(s.id)
+                  return { appliedSuggestionIds: ids, applied: st.applied.filter((a) => a.suggestionId !== s.id) }
+                })
+                get().pushToast('info', 'Change reverted.')
+              },
+            }
+          : undefined
+        get().pushToast('success', res.message, undo)
       } else {
         get().pushToast('error', res.message)
       }
@@ -152,13 +164,47 @@ export const useStore = create<MeridianState>((set, get) => ({
     set((st) => ({ dismissedSuggestionIds: new Set(st.dismissedSuggestionIds).add(id) }))
   },
 
-  pushToast(kind, message) {
+  pushToast(kind, message, action) {
     const id = genId()
-    set((st) => ({ toasts: [...st.toasts, { id, kind, message }] }))
-    setTimeout(() => get().removeToast(id), 4200)
+    set((st) => ({ toasts: [...st.toasts, { id, kind, message, action }] }))
+    setTimeout(() => get().removeToast(id), action ? 7000 : 4200)
   },
 
   removeToast(id) {
     set((st) => ({ toasts: st.toasts.filter((t) => t.id !== id) }))
   },
 }))
+
+type SetState = (partial: (st: MeridianState) => Partial<MeridianState>) => void
+
+/** Bump version + clone the snapshot reference (so [snapshot]-keyed memos
+ *  re-derive), merging any extra state fields. */
+function bumpSnapshot(set: SetState, updater: (st: MeridianState) => Partial<MeridianState>) {
+  set((st) => ({
+    version: st.version + 1,
+    snapshot: st.snapshot ? { ...st.snapshot } : st.snapshot,
+    ...updater(st),
+  }))
+}
+
+/** Capture an entity's pre-action field(s) and return a closure that restores
+ *  them — backs the toast's Undo. Returns null if the entity can't be resolved. */
+function captureRestore(snapshot: Snapshot | null, req: ActionRequest): (() => void) | null {
+  if (!snapshot) return null
+  const getEntity = (): { status?: string; dailyBudget?: number | null } | undefined => {
+    if (req.level === 'campaign') return snapshot.campaignById.get(req.entityId)
+    if (req.level === 'adset') return snapshot.adSetById.get(req.entityId)
+    if (req.level === 'ad') return snapshot.adById.get(req.entityId)
+    return undefined
+  }
+  const e = getEntity()
+  if (!e) return null
+  const prevStatus = e.status
+  const prevBudget = e.dailyBudget
+  return () => {
+    const x = getEntity() as { status?: string; dailyBudget?: number | null } | undefined
+    if (!x) return
+    if (req.kind === 'pause' || req.kind === 'activate') x.status = prevStatus
+    if (req.kind === 'increase_budget' || req.kind === 'decrease_budget') x.dailyBudget = prevBudget
+  }
+}

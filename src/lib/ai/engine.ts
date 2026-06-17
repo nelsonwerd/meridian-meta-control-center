@@ -74,7 +74,10 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
       rationale: `This ad has spent ${money(m7.spend)} over 7 days at a ${m7.ctr.toFixed(2)}% link CTR (below the ${T.doaCtrPct}% floor) and only ${m7.purchases} order(s). The creative isn't earning the click — it's burning budget. Pause and reallocate.`,
       evidence: [`7d CTR ${m7.ctr.toFixed(2)}%`, `${fmtInt(m7.impressions)} impressions`, `${m7.purchases} orders`, `${money(m7.spend)} spent`],
       impact: { metric: 'Stop waste', change: -1, note: `~${money(m7.spend / 7)}/day recovered` },
-      confidence: 0.9,
+      // Low CTR can be a tracking artifact, not always a dead creative — so this
+      // is a strong signal, not a certainty.
+      confidence: 0.76,
+      impactScore: m7.spend / 7,
       action: { kind: 'pause', label: 'Pause ad', targetEntityId: ad.id, targetLevel: 'ad' },
     })
   }
@@ -86,7 +89,10 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
       rationale: `Past the give-it-a-chance threshold: ${money(m7.spend)} spent in 7 days (≥ 1.5× the ${money(target)} target CPA) with zero conversions. Cut losses now.`,
       evidence: [`${money(m7.spend)} spent`, `0 orders`, `target CPA ${money(target)}`],
       impact: { metric: 'Stop waste', change: -1, note: `~${money(m7.spend / 7)}/day recovered` },
-      confidence: 0.85,
+      // Hedge for attribution lag — view-through/longer-window orders can land
+      // outside the 7d-click/1d-view default and read as 0 here.
+      confidence: 0.74,
+      impactScore: m7.spend / 7,
       action: { kind: 'pause', label: 'Pause ad', targetEntityId: ad.id, targetLevel: 'ad' },
     })
   }
@@ -102,12 +108,18 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
     m7.cpa > target * 1.2
   ) {
     const over = (m3.cpa / target - 1) * 100
-    return build('CUT_BUDGET', 'high', 'ad', ad.id, ad.name, client.id, {
+    // The money actually being WASTED per day = spend above what target-CPA would
+    // have cost for the same orders. High only when that bleed is material (≥ $50/day);
+    // otherwise it's a routine cut → medium. Keeps "High" a genuine minority.
+    const wastedPerDay = Math.max(0, m7.spend - m7.purchases * target) / 7
+    const cutSeverity: Severity = wastedPerDay >= 90 ? 'high' : 'medium'
+    return build('CUT_BUDGET', cutSeverity, 'ad', ad.id, ad.name, client.id, {
       title: `Cut — CPA ${money(m3.cpa)} is ${over.toFixed(0)}% over target`,
       rationale: `3-day CPA of ${money(m3.cpa)} is ${over.toFixed(0)}% above the ${money(target)} target on ${m3.purchases} orders of signal. Pause this ad (or cut its share) and route spend to in-target ads.`,
       evidence: [`3d CPA ${money(m3.cpa)}`, `target ${money(target)}`, `${m7.purchases} orders/7d`, `${money(m7.spend)} spent/7d`],
-      impact: { metric: '−CPA drag', change: -0.15, note: `frees ${money(m7.spend / 7)}/day` },
+      impact: { metric: '−CPA drag', change: -0.15, note: `~${money(wastedPerDay)}/day wasted` },
       confidence: clamp(0.6 + Math.min(m7.purchases / 80, 0.3), 0.6, 0.92),
+      impactScore: wastedPerDay,
       action: { kind: 'pause', label: 'Pause ad', targetEntityId: ad.id, targetLevel: 'ad' },
     })
   }
@@ -123,12 +135,13 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
     cpmRise2wk >= T.fatigueCpmRise2wk &&
     cpaRising
   ) {
-    return build('CREATIVE_FATIGUE', 'high', 'ad', ad.id, ad.name, client.id, {
+    return build('CREATIVE_FATIGUE', 'medium', 'ad', ad.id, ad.name, client.id, {
       title: `Fatigue — frequency ${m7.frequency.toFixed(1)}, CTR −${(ctrDropWoW * 100).toFixed(0)}% WoW`,
       rationale: `Classic fatigue signature: frequency at ${m7.frequency.toFixed(1)}, link CTR down ${(ctrDropWoW * 100).toFixed(0)}% week-over-week, CPM up ${(cpmRise2wk * 100).toFixed(0)}% over 2 weeks, and CPA rising. The audience is saturated on ${creative?.angle ?? 'this concept'}. Iterate the winning angle into a fresh batch rather than abandoning it.`,
       evidence: [`Freq ${m7.frequency.toFixed(1)}`, `CTR ${m7.ctr.toFixed(2)}% (was ${mPrev7.ctr.toFixed(2)}%)`, `CPM +${(cpmRise2wk * 100).toFixed(0)}%`, `CPA ${money(m3.cpa)}`],
       impact: { metric: 'Recover CTR', change: 0.12, note: 'refresh same angle, new hook' },
-      confidence: 0.78,
+      confidence: 0.72,
+      impactScore: (m7.spend / 7) * 0.3,
       action: { kind: 'brief_creative', label: 'Brief refresh', targetEntityId: ad.id, targetLevel: 'ad' },
     })
   }
@@ -150,12 +163,13 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
     const extraDaily = proposed - holder.currentBudget
     const extraOrdersMo = Math.round((extraDaily / Math.max(m3.cpa, 1)) * 30)
     const under = (1 - m3.cpa / target) * 100
-    return build('SCALE_BUDGET', 'high', holder.level, holder.id, holder.name, client.id, {
+    return build('SCALE_BUDGET', 'medium', holder.level, holder.id, holder.name, client.id, {
       title: `Scale +${(T.scaleStepPct * 100).toFixed(0)}% — CPA ${under.toFixed(0)}% under target`,
       rationale: `Winner with room: 3-day CPA ${money(m3.cpa)} is ${under.toFixed(0)}% under the ${money(target)} target on ${m7.purchases} orders/7d, frequency a healthy ${m7.frequency.toFixed(1)}. Raise the ${holder.level === 'campaign' ? 'campaign (CBO)' : 'ad set (ABO)'} budget ${(T.scaleStepPct * 100).toFixed(0)}% (${money(holder.currentBudget)} → ${money(proposed)}) and hold 2–3 days before the next step.`,
       evidence: [`3d CPA ${money(m3.cpa)}`, `target ${money(target)}`, `${m7.purchases} orders/7d`, `Freq ${m7.frequency.toFixed(1)}`],
       impact: { metric: '+Orders', change: 0.2, note: `~+${fmtInt(extraOrdersMo)} orders/mo at current CPA` },
-      confidence: clamp(0.62 + Math.min(m7.purchases / 90, 0.3), 0.62, 0.95),
+      confidence: clamp(0.62 + Math.min(m7.purchases / 90, 0.3), 0.62, 0.92),
+      impactScore: extraDaily,
       action: {
         kind: 'increase_budget',
         label: `Raise to ${money(proposed)}/day`,
@@ -283,6 +297,8 @@ function build(
     impact: Suggestion['projectedImpact']
     confidence: number
     action: Suggestion['action']
+    /** rough $/day at stake — drives the "by impact" sort */
+    impactScore?: number
   },
 ): Suggestion {
   return {
@@ -294,6 +310,7 @@ function build(
     entityId,
     entityName,
     createdAt: today(),
+    impactScore: rest.impactScore ?? 0,
     ...rest,
     projectedImpact: rest.impact,
   } as Suggestion

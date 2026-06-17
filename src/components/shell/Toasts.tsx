@@ -13,7 +13,11 @@ export function Toasts() {
   const toasts = useStore((s) => s.toasts)
   const remove = useStore((s) => s.removeToast)
   return (
-    <div className="pointer-events-none fixed bottom-5 right-5 z-[100] flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2">
+    <div
+      role="status"
+      aria-live="polite"
+      className="pointer-events-none fixed bottom-5 right-5 z-[100] flex w-[360px] max-w-[calc(100vw-2rem)] flex-col gap-2"
+    >
       {toasts.map((t) => {
         const Icon = ICON[t.kind]
         return (
@@ -23,6 +27,17 @@ export function Toasts() {
           >
             <Icon className={cn('mt-0.5 h-4 w-4 shrink-0', TONE[t.kind])} />
             <span className="flex-1 text-sm text-ink">{t.message}</span>
+            {t.action && (
+              <button
+                onClick={() => {
+                  t.action!.onClick()
+                  remove(t.id)
+                }}
+                className="shrink-0 rounded-md bg-surface px-2 py-0.5 text-xs font-semibold text-brand ring-1 ring-inset ring-brand/30 hover:bg-brand/10"
+              >
+                {t.action.label}
+              </button>
+            )}
             <button aria-label="Dismiss notification" onClick={() => remove(t.id)} className="text-ink-subtle hover:text-ink">
               <X className="h-4 w-4" />
             </button>

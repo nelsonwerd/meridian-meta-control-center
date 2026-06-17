@@ -281,9 +281,10 @@ export interface SuggestedAction {
 }
 
 export interface ProjectedImpact {
-  /** human label e.g. "−14% CPA" */
+  /** human label e.g. "+Orders" */
   metric: string
-  /** signed fractional change, e.g. -0.14 */
+  /** INTERNAL directional magnitude, not rendered to users (the card shows
+   *  `metric` + `note`). Kept for sorting/ranking heuristics only. */
   change: number
   /** optional secondary, e.g. estimated extra orders / month */
   note?: string
@@ -305,6 +306,8 @@ export interface Suggestion {
   projectedImpact: ProjectedImpact
   /** 0..1 */
   confidence: number
+  /** rough $/day at stake — used for the "by impact" sort on the feed */
+  impactScore: number
   action: SuggestedAction
   createdAt: ISODate
 }

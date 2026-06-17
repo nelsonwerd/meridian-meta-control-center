@@ -28,6 +28,7 @@ export function Recommendations() {
   const applied = useStore((s) => s.applied)
   const [sev, setSev] = useState<SevFilter>('all')
   const [group, setGroup] = useState<GroupFilter>('all')
+  const [sort, setSort] = useState<'priority' | 'impact'>('priority')
 
   // Retire applied + dismissed suggestions from the live feed (they move to the
   // Activity log) so the list and the severity counts stay honest after Apply.
@@ -44,15 +45,17 @@ export function Recommendations() {
 
   const filtered = useMemo(() => {
     const types = GROUP_TYPES[group]
-    return all.filter((s) => (sev === 'all' || s.severity === sev) && (!types || types.includes(s.type)))
-  }, [all, sev, group])
+    const list = all.filter((s) => (sev === 'all' || s.severity === sev) && (!types || types.includes(s.type)))
+    if (sort === 'impact') return [...list].sort((a, b) => b.impactScore - a.impactScore)
+    return list // already severity-then-confidence sorted by the engine
+  }, [all, sev, group, sort])
 
   return (
     <div className="space-y-6">
       <PageHeader
         eyebrow="AI analyst"
         title="Recommendations"
-        subtitle="Continuously scored from the data. One click applies the change — simulated in demo, live via the Meta API."
+        subtitle="Scored on the last 7 days of delivery (independent of the dashboard date range). A signal to weigh, not an auto-pilot — one click applies the change (simulated in demo, live via the Meta API)."
         actions={
           <span className="chip">
             <Sparkles className="h-3.5 w-3.5 text-brand" /> {all.length} open
@@ -81,18 +84,29 @@ export function Recommendations() {
             { value: 'structure', label: 'Structure' },
           ]}
         />
-        <Segmented<SevFilter>
-          size="sm"
-          value={sev}
-          onChange={setSev}
-          options={[
-            { value: 'all', label: 'All severities' },
-            { value: 'critical', label: 'Critical' },
-            { value: 'high', label: 'High' },
-            { value: 'medium', label: 'Medium' },
-            { value: 'low', label: 'Low' },
-          ]}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmented<'priority' | 'impact'>
+            size="sm"
+            value={sort}
+            onChange={setSort}
+            options={[
+              { value: 'priority', label: 'By priority' },
+              { value: 'impact', label: 'By $/day' },
+            ]}
+          />
+          <Segmented<SevFilter>
+            size="sm"
+            value={sev}
+            onChange={setSev}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'critical', label: 'Critical' },
+              { value: 'high', label: 'High' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'low', label: 'Low' },
+            ]}
+          />
+        </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[1fr_300px]">

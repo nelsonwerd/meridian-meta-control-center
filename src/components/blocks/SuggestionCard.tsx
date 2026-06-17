@@ -12,11 +12,11 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
-import type { ComponentType } from 'react'
+import { useState, type ComponentType } from 'react'
 import { cn } from '../../lib/cn'
 import { useStore } from '../../app/store'
 import { useSnapshot } from '../../app/hooks'
-import { Avatar, ConfidenceBar, SeverityDot } from '../ui/primitives'
+import { Avatar, ConfidenceBar, SeverityDot, Tooltip } from '../ui/primitives'
 import type { Suggestion, SuggestionType } from '../../lib/types'
 
 const META: Record<SuggestionType, { label: string; icon: ComponentType<{ className?: string }>; tone: string }> = {
@@ -44,6 +44,7 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
   const apply = useStore((st) => st.applySuggestion)
   const dismiss = useStore((st) => st.dismissSuggestion)
   const applied = useStore((st) => st.appliedSuggestionIds.has(s.id))
+  const [confirming, setConfirming] = useState(false)
   const meta = META[s.type]
   const Icon = meta.icon
   const client = snapshot?.clients.find((c) => c.id === s.clientId)
@@ -61,8 +62,11 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
             <SeverityDot severity={s.severity} />
             {s.severity}
           </span>
+          <span className="text-2xs font-medium text-ink-subtle">· 7d</span>
           <div className="ml-auto">
-            <ConfidenceBar value={s.confidence} />
+            <Tooltip label="Heuristic signal from the last 7 days of delivery (independent of the dashboard date range). A starting point a buyer weighs — not a guarantee. Verify before applying.">
+              <ConfidenceBar value={s.confidence} />
+            </Tooltip>
           </div>
         </div>
 
@@ -98,16 +102,33 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
             <span className="inline-flex items-center gap-1.5 rounded-lg bg-success/10 px-3 py-1.5 text-xs font-semibold text-success">
               <Check className="h-3.5 w-3.5" /> Applied
             </span>
+          ) : confirming ? (
+            // lightweight two-step confirm — the button already states the exact change
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setConfirming(false)}
+                className="flex h-8 items-center rounded-lg px-2 text-xs font-medium text-ink-subtle hover:bg-surface-3 hover:text-ink"
+              >
+                Cancel
+              </button>
+              <button onClick={() => { apply(s); setConfirming(false) }} className="btn-primary bg-danger py-1.5 text-xs">
+                Confirm: {s.action.label}
+              </button>
+            </div>
           ) : (
             <div className="flex items-center gap-1.5">
               <button
                 onClick={() => dismiss(s.id)}
+                aria-label="Dismiss suggestion"
                 className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-subtle transition-colors hover:bg-surface-3 hover:text-ink"
                 title="Dismiss"
               >
                 <X className="h-4 w-4" />
               </button>
-              <button onClick={() => apply(s)} className="btn-primary py-1.5 text-xs">
+              <button
+                onClick={() => (s.action.kind === 'none' ? apply(s) : setConfirming(true))}
+                className="btn-primary py-1.5 text-xs"
+              >
                 {s.action.kind === 'none' ? 'Acknowledge' : s.action.label}
               </button>
             </div>
