@@ -1,0 +1,168 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+   Meridian design tokens
+   Dark-first "command cockpit" palette. All surface/text colors are CSS
+   variables expressed as raw `R G B` triplets so Tailwind can apply alpha and
+   we can swap themes by flipping [data-theme].
+   ========================================================================== */
+:root,
+[data-theme='dark'] {
+  --canvas: 8 9 12; /* #08090C deep cockpit black */
+  --surface: 14 16 21; /* #0E1015 panel */
+  --surface-2: 20 23 31; /* #14171F raised panel */
+  --surface-3: 28 32 42; /* #1C202A hover / popover */
+  --line: 38 43 54; /* hairline borders */
+  --line-strong: 54 61 76;
+  --ink: 236 239 245; /* primary text */
+  --ink-muted: 150 158 173; /* secondary text */
+  --ink-subtle: 99 107 123; /* tertiary / captions */
+
+  --brand: 138 124 249; /* #8A7CF9 meridian violet */
+  --brand-soft: 49 44 92; /* low-chroma violet for fills */
+  --brand-foreground: 255 255 255;
+  --teal: 54 214 195; /* #36D6C3 signal teal */
+  --success: 52 211 153; /* emerald-400 */
+  --warning: 251 191 36; /* amber-400 */
+  --danger: 248 113 113; /* red-400 */
+  --info: 96 165 250; /* blue-400 */
+
+  --shadow-color: 0 0 0;
+  color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --canvas: 244 245 248;
+  --surface: 255 255 255;
+  --surface-2: 248 249 252;
+  --surface-3: 240 242 246;
+  --line: 226 229 235;
+  --line-strong: 209 213 222;
+  --ink: 17 21 28;
+  --ink-muted: 90 99 114;
+  --ink-subtle: 134 142 156;
+
+  --brand: 99 84 233;
+  --brand-soft: 233 230 252;
+  --brand-foreground: 255 255 255;
+  --teal: 13 165 148;
+  --success: 16 161 113;
+  --warning: 202 138 4;
+  --danger: 220 78 78;
+  --info: 37 99 235;
+
+  --shadow-color: 30 40 60;
+  color-scheme: light;
+}
+
+* {
+  border-color: rgb(var(--line));
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: rgb(var(--canvas));
+  color: rgb(var(--ink));
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11', 'ss01';
+  text-rendering: optimizeLegibility;
+}
+
+/* Tabular figures for all numeric/metric displays */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum';
+}
+
+/* ----- Scrollbars: thin, themed ----- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--line-strong)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: rgb(var(--line-strong));
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgb(var(--ink-subtle));
+}
+
+/* ----- Reusable component primitives ----- */
+@layer components {
+  .card {
+    @apply rounded-2xl border border-line bg-surface shadow-card;
+  }
+  .card-2 {
+    @apply rounded-xl border border-line bg-surface-2;
+  }
+  .panel-hover {
+    @apply transition-colors duration-200 hover:border-line-strong hover:bg-surface-3;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-2 px-2.5 py-1 text-xs font-medium text-ink-muted;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-brand text-brand-foreground shadow-soft hover:brightness-110 active:brightness-95;
+  }
+  .btn-ghost {
+    @apply btn text-ink-muted hover:bg-surface-3 hover:text-ink;
+  }
+  .btn-outline {
+    @apply btn border border-line bg-surface-2 text-ink hover:border-line-strong hover:bg-surface-3;
+  }
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface-2 px-3 py-2 text-sm text-ink placeholder:text-ink-subtle focus:border-brand/60 focus:outline-none focus:ring-2 focus:ring-brand/25;
+  }
+  .label-eyebrow {
+    @apply text-2xs font-semibold uppercase tracking-[0.14em] text-ink-subtle;
+  }
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-surface-3;
+  }
+  .skeleton::after {
+    @apply absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/5 to-transparent;
+    content: '';
+  }
+  .focus-ring {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas;
+  }
+}
+
+/* Recharts theming hooks */
+.recharts-cartesian-axis-tick-value {
+  fill: rgb(var(--ink-subtle));
+  font-size: 11px;
+}
+.recharts-cartesian-grid line {
+  stroke: rgb(var(--line) / 0.7);
+}
+.recharts-tooltip-wrapper:focus {
+  outline: none;
+}
+
+/* Smooth route transitions */
+.route-fade {
+  animation: fade-in 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+}
