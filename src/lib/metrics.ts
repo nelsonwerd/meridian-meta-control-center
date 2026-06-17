@@ -68,23 +68,30 @@ export function filterByRange(rows: Insight[], range: DateRange): Insight[] {
 /* ----- KPI delta vs the immediately-preceding equal-length window ----- */
 
 const HIGHER_IS_BETTER: Record<string, boolean> = {
-  spend: true, // neutral, but we treat scaling as positive context
-  impressions: true, reach: true, clicks: true, linkClicks: true,
   purchases: true, revenue: true, ctr: true, roas: true, aov: true,
   cvr: true, hookRate: true, holdRate: true,
   cpa: false, cpc: false, cpm: false, frequency: false,
 }
 
+// Volume / context metrics where a change has no inherent good-or-bad colour —
+// shown as an informational neutral delta, never green/red.
+const NEUTRAL_KEYS = new Set([
+  'spend', 'impressions', 'reach', 'clicks', 'linkClicks',
+  'addToCart', 'landingPageViews', 'videoPlays', 'video3s', 'videoThruplays',
+])
+
 export function kpiDelta(key: keyof MetricsBundle, current: number, prev: number): KpiDelta {
+  const neutral = NEUTRAL_KEYS.has(key as string)
   const higherIsBetter = HIGHER_IS_BETTER[key] ?? true
   const delta = current - prev
   const deltaPct = prev !== 0 ? delta / Math.abs(prev) : current !== 0 ? 1 : 0
-  return { value: current, prevValue: prev, delta, deltaPct, higherIsBetter }
+  return { value: current, prevValue: prev, delta, deltaPct, higherIsBetter, neutral }
 }
 
-/** Whether a delta should read as "good" (green) given the KPI's direction. */
+/** Whether a delta should read as "good" (green) given the KPI's direction.
+ *  Returns null when neutral (no colour) or when the change is negligible. */
 export function deltaIsGood(d: KpiDelta): boolean | null {
-  if (d.delta === 0) return null
+  if (d.neutral || Math.abs(d.deltaPct) < 0.005) return null
   const up = d.delta > 0
   return d.higherIsBetter ? up : !up
 }

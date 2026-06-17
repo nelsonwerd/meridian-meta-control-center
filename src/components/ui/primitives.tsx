@@ -2,7 +2,6 @@ import { ArrowDownRight, ArrowUpRight, Minus } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { cn } from '../../lib/cn'
 import { deltaIsGood } from '../../lib/metrics'
-import { fmtDeltaPct } from '../../lib/format'
 import type { EntityStatus, KpiDelta, Severity } from '../../lib/types'
 
 /* ---------------- Avatar (client monogram) ---------------- */
@@ -19,6 +18,7 @@ export function Avatar({
 }) {
   return (
     <span
+      aria-hidden="true"
       className={cn('inline-flex shrink-0 items-center justify-center rounded-lg font-semibold text-white', className)}
       style={{
         width: size,
@@ -95,16 +95,20 @@ export function Chip({
   )
 }
 
-/* ---------------- Delta pill ---------------- */
+/* ---------------- Delta pill ----------------
+   Arrow follows the SIGN of the change; colour follows good/bad (or neutral for
+   volume metrics and negligible moves). Magnitude is shown unsigned — the arrow
+   already carries direction, so "↘ 3%" reads as "down 3%" without a sign clash. */
 export function Delta({ d, className, invertColor }: { d: KpiDelta; className?: string; invertColor?: boolean }) {
   let good = deltaIsGood(d)
   if (invertColor && good !== null) good = !good
+  const negligible = Math.abs(d.deltaPct) < 0.005
   const tone = good === null ? 'text-ink-subtle' : good ? 'text-success' : 'text-danger'
-  const Icon = d.delta === 0 ? Minus : d.delta > 0 ? ArrowUpRight : ArrowDownRight
+  const Icon = negligible ? Minus : d.delta > 0 ? ArrowUpRight : ArrowDownRight
   return (
     <span className={cn('inline-flex items-center gap-0.5 text-xs font-semibold tnum', tone, className)}>
       <Icon className="h-3.5 w-3.5" strokeWidth={2.5} />
-      {fmtDeltaPct(Math.abs(d.deltaPct))}
+      {negligible ? '0%' : `${Math.round(Math.abs(d.deltaPct) * 100)}%`}
     </span>
   )
 }

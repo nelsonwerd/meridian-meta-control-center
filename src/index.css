@@ -17,8 +17,8 @@
   --line: 38 43 54; /* hairline borders */
   --line-strong: 54 61 76;
   --ink: 236 239 245; /* primary text */
-  --ink-muted: 150 158 173; /* secondary text */
-  --ink-subtle: 99 107 123; /* tertiary / captions */
+  --ink-muted: 158 166 181; /* secondary text */
+  --ink-subtle: 138 147 163; /* tertiary / captions — ~5:1 on canvas (WCAG AA) */
 
   --brand: 138 124 249; /* #8A7CF9 meridian violet */
   --brand-soft: 49 44 92; /* low-chroma violet for fills */

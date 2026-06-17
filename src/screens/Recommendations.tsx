@@ -110,7 +110,7 @@ export function Recommendations() {
               <History className="h-4 w-4 text-ink-subtle" />
               <SectionHeader title="Activity" />
             </div>
-            <div className="max-h-[60vh] space-y-2 overflow-y-auto p-3">
+            <div className="max-h-[60vh] min-h-[280px] space-y-2 overflow-y-auto p-3">
               {applied.length ? (
                 applied.map((a) => (
                   <div key={a.id} className="rounded-lg border border-line bg-surface-2 p-2.5">
@@ -124,7 +124,13 @@ export function Recommendations() {
                   </div>
                 ))
               ) : (
-                <div className="px-2 py-8 text-center text-xs text-ink-subtle">Applied actions appear here.</div>
+                <div className="flex h-full flex-col items-center justify-center gap-2 px-4 py-10 text-center">
+                  <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-3 text-ink-subtle">
+                    <History className="h-5 w-5" />
+                  </span>
+                  <div className="text-xs font-medium text-ink-muted">No actions yet</div>
+                  <div className="text-2xs leading-relaxed text-ink-subtle">Apply a recommendation to start your audit trail. Each change is logged here.</div>
+                </div>
               )}
             </div>
           </div>

@@ -32,9 +32,10 @@ export function SettingsScreen() {
   const dirty = mode !== getProviderMode()
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="space-y-6">
       <PageHeader eyebrow="Configuration" title="Settings" subtitle="Connect the Meta Marketing API and tune the AI analyst. Demo mode runs entirely on seeded data." />
 
+      <div className="grid gap-6 lg:grid-cols-[1.55fr_1fr]">
       {/* Connection */}
       <section className="card p-6">
         <SectionHeader eyebrow="Data source" title="Connection" subtitle="Flip to Live once your Meta credentials are in place." />
@@ -85,6 +86,30 @@ export function SettingsScreen() {
           </div>
         )}
       </section>
+
+      {/* Integration checklist — fills the column, useful in both modes */}
+      <aside className="card flex flex-col p-6">
+        <SectionHeader eyebrow="Go-live" title="Turn the lights on" subtitle="The path from demo to live data." />
+        <ol className="mt-4 space-y-2.5 text-sm">
+          {[
+            'Create the Meta app + System User (agency BM)',
+            'Accept Partner access for client-owned BMs',
+            'Map clients → ad accounts below',
+            'Stand up a backend token proxy',
+            'Finish LiveProvider structure mapping (last-mile)',
+            'Flip to Live & reload',
+          ].map((step, i) => (
+            <li key={i} className="flex items-start gap-2.5 text-ink-muted">
+              <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-surface-3 text-2xs font-semibold text-ink">{i + 1}</span>
+              {step}
+            </li>
+          ))}
+        </ol>
+        <p className="mt-4 border-t border-line pt-3 text-2xs leading-relaxed text-ink-subtle">
+          Full guide: <span className="font-mono text-ink-muted">docs/META_INTEGRATION.md</span>. The AI engine already runs on heuristics — no keys required.
+        </p>
+      </aside>
+      </div>
 
       {/* Ad account mapping */}
       <section className="card overflow-hidden">

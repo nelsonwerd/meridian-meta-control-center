@@ -240,6 +240,8 @@ export interface KpiDelta {
   deltaPct: number
   /** whether an increase is good for this KPI (CPA up is bad) */
   higherIsBetter: boolean
+  /** volume/context metric where a change has no inherent good/bad (e.g. spend) */
+  neutral: boolean
 }
 
 /* ----- AI engine output shapes ----- */
