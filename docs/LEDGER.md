@@ -113,5 +113,21 @@ unused, as the placeholder).
 
 ### Round 2 — focused re-verification of the 8 fixes + smoke test
 A separate verifier independently confirmed each fix in the code and re-ran the
-live smoke test (all routes render, apply works, console error-free, no duplicate
-cards, tsc clean). Result appended below.
+live smoke test. **Result: all 8 fixes PASS.**
+
+- Every fix confirmed in source (dedup Set; DOA `hasImprSignal && hasSpendSignal`;
+  `graphGet` throws past `MAX_PAGES`; `resolveAccount()` with no `accounts.find(()=>true)`
+  remaining; `currencyOffset()` the only budget multiplier; SCALE `ad.status==='ACTIVE'`
+  first; consolidation positive allowlist + `<n>/wk` evidence; four aria-labels +
+  avatar `aria-hidden`).
+- Live smoke test: all 7 routes render real content; **console error-free** (only the
+  benign React-Router v7 future-flag warnings); `/recommendations` header "79 open" =
+  79 rendered cards, **0 duplicate ids** (two repeated *title strings* belong to
+  distinct entities — correct, since dedup is by id); apply increments
+  "Applied this session" 0 → 1 and flips the card to Applied.
+- `npx tsc --noEmit` → clean (exit 0).
+
+**Verifier's verdict:** *"All 8 fixes are correctly implemented and independently
+confirmed; the running app renders every route with no console errors,
+recommendation counts are honest, apply works, and the typecheck is clean — the
+build is in a trustworthy, ship-as-first-draft state."*
