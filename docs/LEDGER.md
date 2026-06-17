@@ -131,3 +131,37 @@ live smoke test. **Result: all 8 fixes PASS.**
 confirmed; the running app renders every route with no console errors,
 recommendation counts are honest, apply works, and the typecheck is clean — the
 build is in a trustworthy, ship-as-first-draft state."*
+
+---
+
+## Round 3 — deep-dive audit → build-loop hardening
+
+A full `deep-dive` (5 specialist lanes → synthesis → red-team, evidence in
+`research/meridian-audit/`) rated the build **8/10** ("faithful, honest first
+draft; safe for internal demo testing after one blocker"). A `build-loop` then
+drove the prioritized fixes over **5 iterations**, each re-verified live:
+
+| # | Fixed (verified live) |
+|---|---|
+| 1 | **Tier-0 blocker:** apply now clones the snapshot → dashboards/counts/Campaigns budget+sparkle all reflect a change (no more stale-after-apply). React error boundary catches a screen throw without white-screening. |
+| 2 | Engine window + "signal, not proof" disclosure; two-step confirm + Undo on writes; severity re-tier (Critical+High **81%→23%**, High a genuine 19%); "$/day" impact sort; softened overstated confidence constants. |
+| 3 | Responsive: sidebar → icon rail below `lg`, no mobile overflow, single-column KPIs. Light-theme tertiary text **5.22:1** (WCAG AA). |
+| 4 | **Watchtower** ("what changed overnight"): pacing + anomaly (CPA-blowout / CPM-spike / tracking-break) engine rules surfaced on the home screen. Scan→act deep-link (Campaigns flag → filtered Recommendations). Hygiene: NaN-safe formatting, flat-week copy, genuinely-onboarding client, a11y. |
+| 5 | Optimization thresholds are now **live-editable** sliders in Settings that re-score the engine instantly + persist. |
+
+**Stop condition: PASS** — all acceptance criteria met, `tsc` + production build
+green, no open Blocker/High/Medium defect on either track. Red-team's one
+overstated finding (projected-impact "false precision") was correctly discounted
+(those constants never render); the credibility weight moved to the now-disclosed
+confidence signal.
+
+### What the loop deliberately did NOT reach (honest residual)
+- **Live Meta integration** (structure→type mapping, reach de-duplication,
+  effective/learning status, async report jobs, per-account currency_offset) —
+  deferred to a **prompt-pack** (`docs/PROMPT_PACK_live_integration.md`), not faked.
+- **SCALE cooldown** (days-since-last-scale) — still unmodelable in demo (no
+  last-scaled timestamp); only the exited-learning guard is enforced.
+- **Tracking-break anomaly** rule exists but does not fire on the healthy demo
+  data — present and ready for live.
+- **Human design taste sign-off** remains the residual — the UI cleared the
+  deep-dive's UX-lane critic + the build-loop visual passes, not a designer.
