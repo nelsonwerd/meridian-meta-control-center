@@ -23,7 +23,7 @@ const NAV = [
   { to: '/clients', label: 'Clients', icon: Users },
 ]
 
-export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+export function Sidebar({ collapsed, onToggle, hideToggle }: { collapsed: boolean; onToggle: () => void; hideToggle?: boolean }) {
   const theme = useStore((s) => s.theme)
   const toggleTheme = useStore((s) => s.toggleTheme)
   const mode = useStore((s) => s.providerMode)
@@ -111,13 +111,16 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
               {mode === 'live' ? 'Live' : 'Demo data'}
             </span>
           )}
-          <button
-            onClick={onToggle}
-            className={cn('flex h-8 w-8 items-center justify-center rounded-lg text-ink-subtle transition-colors hover:bg-surface-3 hover:text-ink focus-ring', collapsed && 'rotate-180')}
-            title={collapsed ? 'Expand' : 'Collapse'}
-          >
-            <ChevronsLeft className="h-4 w-4" />
-          </button>
+          {!hideToggle && (
+            <button
+              onClick={onToggle}
+              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              className={cn('flex h-8 w-8 items-center justify-center rounded-lg text-ink-subtle transition-colors hover:bg-surface-3 hover:text-ink focus-ring', collapsed && 'rotate-180')}
+              title={collapsed ? 'Expand' : 'Collapse'}
+            >
+              <ChevronsLeft className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
     </aside>

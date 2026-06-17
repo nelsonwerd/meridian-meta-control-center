@@ -16,7 +16,7 @@ export interface KpiRowProps {
 
 export function KpiRow({ current, previous, series, keys, targets, columns }: KpiRowProps) {
   return (
-    <div className={cn('grid gap-3', columns ?? 'grid-cols-2 lg:grid-cols-4')}>
+    <div className={cn('grid gap-3', columns ?? 'grid-cols-1 min-[480px]:grid-cols-2 lg:grid-cols-4')}>
       {keys.map((key) => {
         const delta = kpiDelta(key, current[key], previous[key])
         const spark = series?.map((p) => p[key] as number)

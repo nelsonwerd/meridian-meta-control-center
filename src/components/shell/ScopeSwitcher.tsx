@@ -43,7 +43,7 @@ export function ScopeSwitcher() {
       </button>
 
       {open && (
-        <div className="absolute left-0 z-50 mt-2 w-[340px] overflow-hidden rounded-2xl border border-line bg-surface-2 shadow-pop animate-fade-in">
+        <div className="absolute left-0 z-50 mt-2 w-[min(340px,calc(100vw-1.5rem))] overflow-hidden rounded-2xl border border-line bg-surface-2 shadow-pop animate-fade-in">
           <div className="max-h-[70vh] overflow-y-auto p-1.5">
             <button
               onClick={() => choose({ kind: 'portfolio' })}

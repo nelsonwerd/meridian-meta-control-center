@@ -41,8 +41,8 @@
   --line: 226 229 235;
   --line-strong: 209 213 222;
   --ink: 17 21 28;
-  --ink-muted: 90 99 114;
-  --ink-subtle: 134 142 156;
+  --ink-muted: 82 91 106;
+  --ink-subtle: 100 109 124; /* ~4.8:1 on white — WCAG AA for tertiary text */
 
   --brand: 99 84 233;
   --brand-soft: 233 230 252;
