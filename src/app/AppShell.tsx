@@ -5,6 +5,7 @@ import { TopBar } from '../components/shell/TopBar'
 import { Toasts } from '../components/shell/Toasts'
 import { useStore } from './store'
 import { BootScreen } from '../components/shell/BootScreen'
+import { ErrorBoundary } from '../components/shell/ErrorBoundary'
 
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(false)
@@ -28,7 +29,9 @@ export function AppShell() {
         <TopBar />
         <main key={location.pathname} className="route-fade flex-1 px-5 py-6 lg:px-7">
           <div className="mx-auto w-full max-w-[1400px]">
-            <Outlet />
+            <ErrorBoundary>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </main>
       </div>

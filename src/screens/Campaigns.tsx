@@ -22,14 +22,18 @@ export function Campaigns() {
   const [q, setQ] = useState('')
   const [status, setStatus] = useState<StatusFilter>('all')
 
+  const dismissed = useStore((s) => s.dismissedSuggestionIds)
+  const applied = useStore((s) => s.appliedSuggestionIds)
   const clients = clientsForScope(snapshot, scope)
   const showClient = scope.kind !== 'client'
 
   const suggestionByEntity = useMemo(() => {
     const m = new Map<string, number>()
-    analyzeScope(snapshot, scope).forEach((s) => m.set(s.entityId, (m.get(s.entityId) ?? 0) + 1))
+    analyzeScope(snapshot, scope)
+      .filter((s) => !dismissed.has(s.id) && !applied.has(s.id))
+      .forEach((s) => m.set(s.entityId, (m.get(s.entityId) ?? 0) + 1))
     return m
-  }, [snapshot, scope])
+  }, [snapshot, scope, dismissed, applied])
 
   const campaignRows = useMemo(() => {
     const clientIds = new Set(clients.map((c) => c.id))

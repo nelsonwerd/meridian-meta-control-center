@@ -128,6 +128,11 @@ export const useStore = create<MeridianState>((set, get) => ({
       if (res.ok) {
         set((st) => ({
           version: st.version + 1,
+          // Clone the snapshot reference so every [snapshot]-keyed useMemo
+          // re-derives from the now-mutated entities (dashboards, counts, flags
+          // all reflect the change). The index Maps are shared by reference and
+          // contain the in-place-mutated entities, so the re-read sees fresh data.
+          snapshot: st.snapshot ? { ...st.snapshot } : st.snapshot,
           appliedSuggestionIds: new Set(st.appliedSuggestionIds).add(s.id),
           applied: [
             { id: genId(), title: s.title, message: res.message, ts: Date.now(), suggestionId: s.id },

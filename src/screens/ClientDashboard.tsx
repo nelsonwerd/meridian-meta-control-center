@@ -24,6 +24,7 @@ export function ClientDashboard({ client }: { client: Client }) {
   const snapshot = useSnapshot()!
   const range = useStore((s) => s.range)
   const dismissed = useStore((s) => s.dismissedSuggestionIds)
+  const applied = useStore((s) => s.appliedSuggestionIds)
   const bm = snapshot.businessManagers.find((b) => b.id === client.bmId)
 
   const data = useMemo(() => {
@@ -40,14 +41,14 @@ export function ClientDashboard({ client }: { client: Client }) {
         spark: timeseries(insightsForAdIds(snapshot, adIdsForScope(snapshot, scope).filter((id) => snapshot.adById.get(id)?.campaignId === c.id)), range).map((p) => p.spend),
       }))
       .sort((a, b) => b.m.spend - a.m.spend)
-    const suggestions = analyzeClient(snapshot, client.id).filter((s) => !dismissed.has(s.id))
+    const suggestions = analyzeClient(snapshot, client.id).filter((s) => !dismissed.has(s.id) && !applied.has(s.id))
     const creatives = creativePerformance(snapshot, client.id, range)
       .filter((p) => p.metrics.purchases > 0)
       .sort((a, b) => a.metrics.cpa - b.metrics.cpa)
       .slice(0, 4)
     const report = buildWeeklyReport(snapshot, client.id)
     return { current, previous, series, campaigns, suggestions, creatives, report }
-  }, [snapshot, client, range, dismissed])
+  }, [snapshot, client, range, dismissed, applied])
 
   const onCpa = data.current.cpa > 0 && data.current.cpa <= client.targetCPA
   const pacing = data.report.pacing

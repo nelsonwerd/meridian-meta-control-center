@@ -28,6 +28,7 @@ export function PortfolioOverview({ scope }: { scope: Scope }) {
   const range = useStore((s) => s.range)
   const setScope = useStore((s) => s.setScope)
   const dismissed = useStore((s) => s.dismissedSuggestionIds)
+  const applied = useStore((s) => s.appliedSuggestionIds)
 
   const data = useMemo(() => {
     const prev = previousRange(range)
@@ -46,12 +47,12 @@ export function PortfolioOverview({ scope }: { scope: Scope }) {
         return { client: c, m, mp, spark: cts.map((p) => p.spend) }
       })
       .sort((a, b) => b.m.spend - a.m.spend)
-    const suggestions = analyzeScope(snapshot, scope).filter((s) => !dismissed.has(s.id))
+    const suggestions = analyzeScope(snapshot, scope).filter((s) => !dismissed.has(s.id) && !applied.has(s.id))
     const allocation = clientRows
       .filter((r) => r.m.spend > 0)
       .map((r, i) => ({ label: r.client.name, value: r.m.spend, color: r.client.accentColor || seriesColor(i) }))
     return { current, previous, series, clientRows, suggestions, allocation }
-  }, [snapshot, scope, range, dismissed])
+  }, [snapshot, scope, range, dismissed, applied])
 
   const critical = data.suggestions.filter((s) => s.severity === 'critical' || s.severity === 'high').length
 

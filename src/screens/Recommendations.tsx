@@ -29,7 +29,12 @@ export function Recommendations() {
   const [sev, setSev] = useState<SevFilter>('all')
   const [group, setGroup] = useState<GroupFilter>('all')
 
-  const all = useMemo(() => analyzeScope(snapshot, scope).filter((s) => !dismissed.has(s.id)), [snapshot, scope, dismissed])
+  // Retire applied + dismissed suggestions from the live feed (they move to the
+  // Activity log) so the list and the severity counts stay honest after Apply.
+  const all = useMemo(
+    () => analyzeScope(snapshot, scope).filter((s) => !dismissed.has(s.id) && !appliedIds.has(s.id)),
+    [snapshot, scope, dismissed, appliedIds],
+  )
 
   const counts = useMemo(() => {
     const c = { critical: 0, high: 0, medium: 0, low: 0 }
