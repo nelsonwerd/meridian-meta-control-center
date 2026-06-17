@@ -98,10 +98,15 @@ interface GraphPage<T> {
   paging?: { cursors?: { after?: string }; next?: string }
 }
 
+// Safety ceiling well above any realistic page count. Critically, if the cursor
+// is still valid at the ceiling we THROW rather than silently returning a partial
+// array — a silent truncation would understate summed KPIs (spend/orders/revenue).
+const MAX_PAGES = 1000
+
 async function graphGet<T>(path: string, params: Record<string, string>, token: string): Promise<T[]> {
   const out: T[] = []
   let after: string | undefined
-  let guard = 0
+  let pages = 0
   do {
     const url = new URL(`${GRAPH_BASE}/${API_VERSION}/${path}`)
     Object.entries({ ...params, access_token: token, limit: '200', ...(after ? { after } : {}) }).forEach(([k, v]) =>
@@ -115,7 +120,12 @@ async function graphGet<T>(path: string, params: Record<string, string>, token: 
     const page = (await res.json()) as GraphPage<T>
     out.push(...(page.data ?? []))
     after = page.paging?.cursors?.after && page.paging?.next ? page.paging.cursors.after : undefined
-  } while (after && guard++ < 50)
+    if (after && ++pages >= MAX_PAGES) {
+      throw new Error(
+        `graphGet exceeded ${MAX_PAGES} pages for ${path}; more data remained — narrow the time_range or use async insight report jobs (see docs/META_INTEGRATION.md §3).`,
+      )
+    }
+  } while (after)
   return out
 }
 
@@ -208,24 +218,51 @@ export class LiveProvider implements DataProvider {
     return {} as Snapshot
   }
 
-  async applyAction(req: ActionRequest, _snapshot: Snapshot): Promise<ActionResult> {
+  async applyAction(req: ActionRequest, snapshot: Snapshot): Promise<ActionResult> {
     if (!this.cfg) throw new NotConfiguredError()
-    const acct = this.cfg.accounts.find((a) => true)
-    const token = acct?.accessToken || this.cfg.defaultAccessToken || ''
+    // Resolve the entity's OWNING account so we use the right token + currency.
+    // A multi-BM agency holds a token per client-owned BM — using accounts[0]
+    // blindly would POST with the wrong token and fail (or hit the wrong account).
+    const acct = this.resolveAccount(req, snapshot)
+    if (!acct) return { ok: false, message: `No account/token mapped for entity ${req.entityId}.` }
+    const token = acct.accessToken || this.cfg.defaultAccessToken || ''
     const body = new URLSearchParams({ access_token: token })
     if (req.kind === 'pause') body.set('status', 'PAUSED')
     if (req.kind === 'activate') body.set('status', 'ACTIVE')
     if ((req.kind === 'increase_budget' || req.kind === 'decrease_budget') && req.proposedBudget != null) {
-      // Budgets POST in MINOR units — but the multiplier is the account's
-      // currency_offset (100 for USD/EUR, 1 for JPY/KRW). Never hard-code ÷100;
-      // read currency_offset from the ad account and reuse here.
-      const minorMultiplier = 100 // TODO: source from account.currency_offset
-      body.set('daily_budget', String(Math.round(req.proposedBudget * minorMultiplier)))
+      // Budgets POST in MINOR units; the multiplier is the account's currency
+      // offset (100 for USD/EUR, 1 for zero-decimal JPY/KRW, 1000 for KWD/BHD).
+      const currency = snapshot.accountByClient.get(acct.clientId)?.currency ?? 'USD'
+      body.set('daily_budget', String(Math.round(req.proposedBudget * currencyOffset(currency))))
     }
     const res = await fetch(`${GRAPH_BASE}/${API_VERSION}/${req.entityId}`, { method: 'POST', body })
     if (!res.ok) return { ok: false, message: `Graph ${res.status}: ${(await res.text()).slice(0, 200)}` }
     return { ok: true, message: 'Applied via Meta Marketing API.' }
   }
+
+  /** Map a write request's entity → the LiveAccountConfig that owns it. */
+  private resolveAccount(req: ActionRequest, snapshot: Snapshot): LiveAccountConfig | undefined {
+    if (!this.cfg) return undefined
+    let clientId: string | undefined
+    if (req.level === 'campaign') clientId = snapshot.campaignById.get(req.entityId)?.clientId
+    else if (req.level === 'adset') clientId = snapshot.adSetById.get(req.entityId)?.clientId
+    else if (req.level === 'ad') clientId = snapshot.adById.get(req.entityId)?.clientId
+    else if (req.level === 'account') clientId = snapshot.accounts.find((a) => a.id === req.entityId)?.clientId
+    else if (req.level === 'client') clientId = req.entityId
+    return clientId ? this.cfg.accounts.find((a) => a.clientId === clientId) : undefined
+  }
+}
+
+// Meta currency_offset by ISO code. Most are 100 (two-decimal); zero-decimal and
+// three-decimal currencies differ. Source from the account in production; this map
+// is the documented fallback.
+const ZERO_DECIMAL = new Set(['JPY', 'KRW', 'VND', 'CLP', 'ISK', 'HUF', 'TWD', 'UGX'])
+const THREE_DECIMAL = new Set(['KWD', 'BHD', 'JOD', 'OMR', 'TND'])
+export function currencyOffset(currency: string): number {
+  const c = currency.toUpperCase()
+  if (ZERO_DECIMAL.has(c)) return 1
+  if (THREE_DECIMAL.has(c)) return 1000
+  return 100
 }
 
 function isoDaysAgo(n: number): string {

@@ -213,7 +213,7 @@ function Row({
       <td className="px-4 py-2.5">
         <div className="flex items-center gap-2" style={{ paddingLeft: depth * 20 }}>
           {expandable ? (
-            <button onClick={onToggle} className="grid h-5 w-5 place-items-center rounded text-ink-subtle hover:bg-surface-3 hover:text-ink">
+            <button aria-label={open ? 'Collapse row' : 'Expand row'} onClick={onToggle} className="grid h-5 w-5 place-items-center rounded text-ink-subtle hover:bg-surface-3 hover:text-ink">
               <ChevronRight className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-90')} />
             </button>
           ) : (

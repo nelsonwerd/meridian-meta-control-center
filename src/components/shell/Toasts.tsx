@@ -23,7 +23,7 @@ export function Toasts() {
           >
             <Icon className={cn('mt-0.5 h-4 w-4 shrink-0', TONE[t.kind])} />
             <span className="flex-1 text-sm text-ink">{t.message}</span>
-            <button onClick={() => remove(t.id)} className="text-ink-subtle hover:text-ink">
+            <button aria-label="Dismiss notification" onClick={() => remove(t.id)} className="text-ink-subtle hover:text-ink">
               <X className="h-4 w-4" />
             </button>
           </div>

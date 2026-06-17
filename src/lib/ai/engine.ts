@@ -3,6 +3,7 @@ import type {
   Ad,
   Client,
   EntityLevel,
+  EntityStatus,
   MetricsBundle,
   Scope,
   Severity,
@@ -63,8 +64,11 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
   const hasConvSignal = m7.purchases >= T.minPurchasesToJudge
   const hasImprSignal = m7.impressions >= T.minImpressionsToJudge
 
-  // ---- (1) DOA: lots of impressions, no clicks, near-zero orders ----
-  if (m7.impressions >= T.minImpressionsToJudge && m7.ctr < T.doaCtrPct && m7.purchases <= 1) {
+  // ---- (1) DOA: enough impressions AND spend, no clicks, near-zero orders ----
+  //         All three of the playbook's Trigger-C clauses (impressions + spend +
+  //         CTR floor) must hold — never kill a creative before it's cleared the
+  //         minimum-signal spend gate.
+  if (hasImprSignal && hasSpendSignal && m7.ctr < T.doaCtrPct && m7.purchases <= 1) {
     return build('PAUSE_ENTITY', 'critical', 'ad', ad.id, ad.name, client.id, {
       title: `Pause DOA creative — ${m7.ctr.toFixed(2)}% CTR`,
       rationale: `This ad has spent ${money(m7.spend)} over 7 days at a ${m7.ctr.toFixed(2)}% link CTR (below the ${T.doaCtrPct}% floor) and only ${m7.purchases} order(s). The creative isn't earning the click — it's burning budget. Pause and reallocate.`,
@@ -130,7 +134,12 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
   }
 
   // ---- (5) scale a winner ----
+  //  Require the ad to have EXITED the learning phase (status ACTIVE, not
+  //  LEARNING) per the playbook — don't scale a still-learning ad. (The cooldown
+  //  half, days-since-last-scale, isn't modelable without a last-scaled timestamp;
+  //  noted in the ledger.)
   if (
+    ad.status === 'ACTIVE' &&
     m7.purchases >= T.scaleMinPurchases7d &&
     m3.cpa > 0 &&
     m3.cpa <= target * T.scaleCpaRatio &&
@@ -177,18 +186,21 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
 function analyzeAdSets(ds: Dataset, client: Client): Suggestion[] {
   const out: Suggestion[] = []
   const campaigns = ds.campaignsByClient.get(client.id) ?? []
+  const live = new Set<EntityStatus>(['ACTIVE', 'LEARNING', 'LEARNING_LIMITED'])
   for (const campaign of campaigns) {
-    const sets = (ds.adSetsByCampaign.get(campaign.id) ?? []).filter((s) => s.status !== 'PAUSED')
-    const limited = sets.filter((s) => {
-      const m7 = metricsForAdIds(ds, (ds.adsByAdSet.get(s.id) ?? []).map((a) => a.id), lastNDays(7))
-      return s.status === 'LEARNING_LIMITED' || m7.purchases < T.consolidateMinEventsPerWeek
-    })
+    // positive allowlist — never let a PAUSED/ARCHIVED set into a consolidation
+    const sets = (ds.adSetsByCampaign.get(campaign.id) ?? []).filter((s) => live.has(s.status))
+    const limited = sets
+      .map((s) => ({ s, m7: metricsForAdIds(ds, (ds.adsByAdSet.get(s.id) ?? []).map((a) => a.id), lastNDays(7)) }))
+      .filter(({ s, m7 }) => s.status === 'LEARNING_LIMITED' || m7.purchases < T.consolidateMinEventsPerWeek)
     if (limited.length >= 2 && campaign.budgetType === 'ABO') {
+      const anyLimited = limited.some(({ s }) => s.status === 'LEARNING_LIMITED')
       out.push(
         build('CONSOLIDATE_ADSETS', 'medium', 'campaign', campaign.id, campaign.name, client.id, {
-          title: `Consolidate ${limited.length} learning-limited ad sets`,
-          rationale: `${limited.length} ad sets in “${campaign.name}” are below ~${T.consolidateMinEventsPerWeek} conversions/week and stuck in Learning Limited. In the Advantage+ era, signal density beats granularity — merge audiences/budgets into fewer ad sets so the algorithm can exit learning.`,
-          evidence: limited.slice(0, 4).map((s) => `${s.name}: limited`),
+          title: `Consolidate ${limited.length} sparse ad sets`,
+          rationale: `${limited.length} ad sets in “${campaign.name}” are below ~${T.consolidateMinEventsPerWeek} conversions/week${anyLimited ? ' and some are stuck in Learning Limited' : ''}. In the Advantage+ era, signal density beats granularity — merge audiences/budgets into fewer ad sets so each can gather enough conversions to exit learning.`,
+          // evidence reflects each set's real delivery state, not a blanket "limited"
+          evidence: limited.slice(0, 4).map(({ s, m7 }) => `${s.name}: ${s.status === 'LEARNING_LIMITED' ? 'learning limited' : `${m7.purchases}/wk`}`),
           impact: { metric: 'Exit learning', change: -0.08, note: 'denser signal, lower CPA' },
           confidence: 0.7,
           action: { kind: 'consolidate', label: 'Plan consolidation', targetEntityId: campaign.id, targetLevel: 'campaign' },
@@ -236,7 +248,12 @@ export function analyzeClient(ds: Dataset, clientId: string): Suggestion[] {
   out.push(...analyzeAdSets(ds, client))
   const realloc = analyzeReallocation(ds, client)
   if (realloc) out.push(realloc)
-  return sortSuggestions(out)
+  // Dedup by id: several ads in one CBO campaign resolve to the same
+  // budget-holder, so they'd emit the identical SCALE_BUDGET suggestion. Keep the
+  // first (highest-signal, pushed in ad order) so the list + counts stay honest.
+  const seen = new Set<string>()
+  const deduped = out.filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)))
+  return sortSuggestions(deduped)
 }
 
 export function analyzeScope(ds: Dataset, scope: Scope): Suggestion[] {
