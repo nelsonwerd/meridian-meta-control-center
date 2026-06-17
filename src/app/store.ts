@@ -9,6 +9,7 @@ import {
   type Snapshot,
 } from '../lib/provider'
 import { makeRange } from '../lib/metrics'
+import { loadThresholds, resetThresholds as applyResetThresholds, setThreshold as applyThreshold } from '../lib/ai/thresholds'
 import type { DateRange, ISODate, RangePreset, Scope, Suggestion } from '../lib/types'
 
 export interface Toast {
@@ -56,6 +57,9 @@ interface MeridianState {
   dismissSuggestion: (id: string) => void
   pushToast: (kind: Toast['kind'], message: string, action?: Toast['action']) => void
   removeToast: (id: string) => void
+  /** tune an engine threshold and re-derive every screen */
+  setThreshold: (key: string, value: number) => void
+  resetThresholds: () => void
 }
 
 const genId = () => Math.random().toString(36).slice(2, 10)
@@ -84,6 +88,7 @@ export const useStore = create<MeridianState>((set, get) => ({
 
   async init() {
     set({ loading: true, error: null })
+    loadThresholds() // apply any persisted engine-threshold overrides
     document.documentElement.setAttribute('data-theme', get().theme)
     try {
       const snapshot = await get().provider.loadSnapshot()
@@ -172,6 +177,18 @@ export const useStore = create<MeridianState>((set, get) => ({
 
   removeToast(id) {
     set((st) => ({ toasts: st.toasts.filter((t) => t.id !== id) }))
+  },
+
+  setThreshold(key, value) {
+    applyThreshold(key as never, value)
+    // clone snapshot so every [snapshot]-keyed memo re-runs the engine with the
+    // new threshold (also re-renders Settings via useSnapshot's version sub).
+    bumpSnapshot(set, () => ({}))
+  },
+
+  resetThresholds() {
+    applyResetThresholds()
+    bumpSnapshot(set, () => ({}))
   },
 }))
 

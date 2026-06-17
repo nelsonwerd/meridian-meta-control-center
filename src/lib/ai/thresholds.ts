@@ -31,7 +31,6 @@ export const THRESHOLDS = {
   fatigueFrequency: 3.0,
   fatigueCtrDropWoW: 0.08, // link CTR down >= 8% week-over-week
   fatigueCpmRise2wk: 0.08, // CPM up >= 8% over 2 weeks
-  fatigueCpaRising: true,
 
   /** CONSOLIDATE */
   consolidateMinEventsPerWeek: 18, // below this per ad set → too sparse to exit learning
@@ -45,7 +44,58 @@ export const THRESHOLDS = {
 
   /** REALLOCATE: spread of CPA across an account's ad sets worth rebalancing */
   reallocateCpaSpread: 0.35,
-} as const
+}
+// NB: NOT `as const` — a few of these are tunable at runtime from Settings (the
+// engine reads THRESHOLDS by reference, so mutating a property takes effect on
+// the next analysis pass). Persistence + the editable list live below.
+
+/** The subset exposed as sliders in Settings → Optimization thresholds. */
+export const EDITABLE_THRESHOLDS: {
+  key: keyof typeof THRESHOLDS
+  label: string
+  min: number
+  max: number
+  step: number
+  fmt: (v: number) => string
+}[] = [
+  { key: 'scaleCpaRatio', label: 'Scale when CPA ≤ (% of target)', min: 0.6, max: 0.95, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+  { key: 'cutCpaRatio', label: 'Cut when CPA > (% of target)', min: 1.1, max: 1.6, step: 0.05, fmt: (v) => `${Math.round(v * 100)}%` },
+  { key: 'scaleStepPct', label: 'Budget scale step / edit', min: 0.1, max: 0.3, step: 0.05, fmt: (v) => `+${Math.round(v * 100)}%` },
+  { key: 'fatigueFrequency', label: 'Flag fatigue when frequency >', min: 2.5, max: 4.5, step: 0.1, fmt: (v) => v.toFixed(1) },
+  { key: 'scaleMinPurchases7d', label: 'Min orders / 7d to scale', min: 10, max: 40, step: 1, fmt: (v) => `${Math.round(v)}` },
+]
+
+const DEFAULTS: Record<string, number> = Object.fromEntries(EDITABLE_THRESHOLDS.map((e) => [e.key, THRESHOLDS[e.key]]))
+const STORAGE_KEY = 'meridian.thresholds'
+
+/** Apply any persisted overrides — call once before the first analysis pass. */
+export function loadThresholds() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (raw) Object.assign(THRESHOLDS, JSON.parse(raw))
+  } catch {
+    /* ignore */
+  }
+}
+
+export function setThreshold(key: keyof typeof THRESHOLDS, value: number) {
+  ;(THRESHOLDS as Record<string, number>)[key] = value
+  try {
+    const overrides = Object.fromEntries(EDITABLE_THRESHOLDS.map((e) => [e.key, THRESHOLDS[e.key]]))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(overrides))
+  } catch {
+    /* ignore */
+  }
+}
+
+export function resetThresholds() {
+  Object.assign(THRESHOLDS, DEFAULTS)
+  try {
+    localStorage.removeItem(STORAGE_KEY)
+  } catch {
+    /* ignore */
+  }
+}
 
 /** Healthy directional benchmark ranges (ecommerce Meta), for context badges. */
 export const BENCHMARKS = {

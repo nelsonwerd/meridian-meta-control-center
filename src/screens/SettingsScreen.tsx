@@ -1,16 +1,19 @@
 import { useState } from 'react'
-import { AlertTriangle, CheckCircle2, Cpu, KeyRound, Plug, RefreshCw, Sliders, Workflow } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Cpu, KeyRound, Plug, RefreshCw, RotateCcw, Sliders, Workflow } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { Avatar, Chip, SectionHeader, Segmented } from '../components/ui/primitives'
 import { useSnapshot } from '../app/hooks'
+import { useStore } from '../app/store'
 import { createProvider, getProviderMode, setProviderMode, type ProviderMode } from '../lib/provider'
 import { API_VERSION } from '../lib/provider/liveProvider'
 import { NARRATIVE_MODEL, PROXY_ENDPOINT, STRATEGY_MODEL, USE_LLM } from '../lib/ai/llm'
-import { THRESHOLDS } from '../lib/ai/thresholds'
+import { EDITABLE_THRESHOLDS, THRESHOLDS } from '../lib/ai/thresholds'
 import { cn } from '../lib/cn'
 
 export function SettingsScreen() {
   const snapshot = useSnapshot()!
+  const setThreshold = useStore((s) => s.setThreshold)
+  const resetThresholds = useStore((s) => s.resetThresholds)
   const [mode, setMode] = useState<ProviderMode>(getProviderMode())
   const [token, setToken] = useState('')
   const [testing, setTesting] = useState(false)
@@ -165,19 +168,41 @@ export function SettingsScreen() {
         </div>
       </section>
 
-      {/* Optimization rules */}
+      {/* Optimization rules — live-editable */}
       <section className="card p-6">
-        <SectionHeader eyebrow="Tuning" title="Optimization thresholds" subtitle="The rules the recommendation engine reasons with. Centralized so they're tunable per account." />
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          <Rule icon={<Sliders className="h-4 w-4 text-success" />} label="Scale when CPA ≤" value={`${Math.round(THRESHOLDS.scaleCpaRatio * 100)}% of target`} />
-          <Rule icon={<Sliders className="h-4 w-4 text-warning" />} label="Cut when CPA >" value={`${Math.round(THRESHOLDS.cutCpaRatio * 100)}% of target`} />
-          <Rule icon={<Sliders className="h-4 w-4 text-brand" />} label="Scale step" value={`+${Math.round(THRESHOLDS.scaleStepPct * 100)}% / edit`} />
-          <Rule icon={<Sliders className="h-4 w-4 text-danger" />} label="Fatigue frequency" value={`> ${THRESHOLDS.fatigueFrequency.toFixed(1)}`} />
-          <Rule icon={<Sliders className="h-4 w-4 text-info" />} label="Min orders to judge" value={`${THRESHOLDS.minPurchasesToJudge}`} />
-          <Rule icon={<Sliders className="h-4 w-4 text-teal" />} label="Confident scale at" value={`${THRESHOLDS.confidentPurchases} orders`} />
+        <SectionHeader
+          eyebrow="Tuning"
+          title="Optimization thresholds"
+          subtitle="Tune the rules the recommendation engine reasons with — changes re-score every screen instantly."
+          action={
+            <button onClick={() => resetThresholds()} className="btn-ghost py-1.5 text-xs">
+              <RotateCcw className="h-3.5 w-3.5" /> Reset defaults
+            </button>
+          }
+        />
+        <div className="mt-5 grid gap-5 sm:grid-cols-2">
+          {EDITABLE_THRESHOLDS.map((t) => (
+            <div key={t.key}>
+              <div className="mb-1.5 flex items-center justify-between">
+                <label className="flex items-center gap-1.5 text-sm text-ink-muted">
+                  <Sliders className="h-3.5 w-3.5 text-brand" /> {t.label}
+                </label>
+                <span className="font-mono text-sm font-semibold tabular-nums text-ink">{t.fmt(THRESHOLDS[t.key])}</span>
+              </div>
+              <input
+                type="range"
+                min={t.min}
+                max={t.max}
+                step={t.step}
+                value={THRESHOLDS[t.key]}
+                onChange={(e) => setThreshold(t.key, Number(e.target.value))}
+                className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-3 accent-brand"
+              />
+            </div>
+          ))}
         </div>
-        <p className="mt-4 text-2xs leading-relaxed text-ink-subtle">
-          Directional defaults from agency best-practice (see <span className="font-mono text-ink">docs/research/adops-kpis-playbook.md</span>). The engine's calls are a signal a buyer weighs — not a backtested guarantee.
+        <p className="mt-5 text-2xs leading-relaxed text-ink-subtle">
+          Directional defaults from agency best-practice (see <span className="font-mono text-ink">docs/research/adops-kpis-playbook.md</span>). The engine's calls are a signal a buyer weighs — not a backtested guarantee. Overrides persist on this device.
         </p>
       </section>
     </div>
