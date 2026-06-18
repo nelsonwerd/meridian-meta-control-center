@@ -19,7 +19,8 @@ import { cn } from '../../lib/cn'
 import { useStore } from '../../app/store'
 import { useSnapshot } from '../../app/hooks'
 import { Avatar, ConfidenceBar, SeverityDot, Tooltip } from '../ui/primitives'
-import type { Suggestion, SuggestionType } from '../../lib/types'
+import { parentPath } from '../../lib/selectors'
+import type { EntityLevel, Suggestion, SuggestionType } from '../../lib/types'
 
 const META: Record<SuggestionType, { label: string; icon: ComponentType<{ className?: string }>; tone: string }> = {
   SCALE_BUDGET: { label: 'Scale', icon: TrendingUp, tone: 'text-success bg-success/10' },
@@ -43,6 +44,14 @@ const SEV_ACCENT: Record<string, string> = {
   low: 'rgb(99 107 123)',
 }
 
+const LEVEL_LABEL: Record<EntityLevel, string> = {
+  ad: 'Ad',
+  adset: 'Ad set',
+  campaign: 'Campaign',
+  client: 'Account',
+  account: 'Account',
+}
+
 export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showClient?: boolean }) {
   const snapshot = useSnapshot()
   const apply = useStore((st) => st.applySuggestion)
@@ -52,6 +61,7 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
   const meta = META[s.type]
   const Icon = meta.icon
   const client = snapshot?.clients.find((c) => c.id === s.clientId)
+  const path = snapshot ? parentPath(snapshot, s.level, s.entityId) : ''
 
   return (
     <div className="card group relative overflow-hidden p-4 transition-all duration-200 hover:border-line-strong hover:shadow-pop">
@@ -76,14 +86,21 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
 
         <h3 className="mt-2.5 text-sm font-semibold leading-snug text-ink">{s.title}</h3>
 
-        {showClient && client && (
-          <div className="mt-1.5 flex items-center gap-1.5 text-2xs text-ink-subtle">
-            <Avatar monogram={client.monogram} color={client.accentColor} size={16} />
-            <span className="text-ink-muted">{client.name}</span>
-            <span>·</span>
-            <span className="truncate">{s.entityName}</span>
-          </div>
-        )}
+        {/* Always identify the exact entity + its level + parent path; showClient
+            only toggles the client avatar/name (shown in portfolio/BM views). */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs">
+          {showClient && client && (
+            <span className="flex items-center gap-1.5">
+              <Avatar monogram={client.monogram} color={client.accentColor} size={16} />
+              <span className="text-ink-muted">{client.name}</span>
+            </span>
+          )}
+          <span className="rounded bg-surface-2 px-1.5 py-0.5 font-medium uppercase tracking-wide text-ink-subtle ring-1 ring-inset ring-line">
+            {LEVEL_LABEL[s.level]}
+          </span>
+          <span className="truncate font-medium text-ink-muted">{s.entityName}</span>
+          {path && <span className="truncate text-ink-subtle">› {path}</span>}
+        </div>
 
         <p className="mt-2 text-xs leading-relaxed text-ink-muted line-clamp-3">{s.rationale}</p>
 

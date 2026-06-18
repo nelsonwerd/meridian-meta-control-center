@@ -8,7 +8,7 @@ import { useSnapshot } from '../app/hooks'
 import { useStore } from '../app/store'
 import { analyzeScope } from '../lib/ai/engine'
 import { cn } from '../lib/cn'
-import type { Severity, SuggestionType } from '../lib/types'
+import type { EntityLevel, Severity, SuggestionType } from '../lib/types'
 
 type SevFilter = 'all' | Severity
 type GroupFilter = 'all' | 'scale' | 'cut' | 'creative' | 'structure'
@@ -30,6 +30,7 @@ export function Recommendations() {
   const [sev, setSev] = useState<SevFilter>('all')
   const [group, setGroup] = useState<GroupFilter>('all')
   const [sort, setSort] = useState<'priority' | 'impact'>('priority')
+  const [level, setLevel] = useState<'all' | EntityLevel>('all')
   const [searchParams, setSearchParams] = useSearchParams()
   const entityFilter = searchParams.get('entity')
 
@@ -53,10 +54,12 @@ export function Recommendations() {
 
   const filtered = useMemo(() => {
     const types = GROUP_TYPES[group]
-    const list = all.filter((s) => (sev === 'all' || s.severity === sev) && (!types || types.includes(s.type)))
+    const list = all.filter(
+      (s) => (sev === 'all' || s.severity === sev) && (!types || types.includes(s.type)) && (level === 'all' || s.level === level),
+    )
     if (sort === 'impact') return [...list].sort((a, b) => b.impactScore - a.impactScore)
     return list // already severity-then-confidence sorted by the engine
-  }, [all, sev, group, sort])
+  }, [all, sev, group, sort, level])
 
   return (
     <div className="space-y-6">
@@ -95,17 +98,31 @@ export function Recommendations() {
 
       {/* filters */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Segmented<GroupFilter>
-          value={group}
-          onChange={setGroup}
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'scale', label: 'Scale' },
-            { value: 'cut', label: 'Cut / Pause' },
-            { value: 'creative', label: 'Creative' },
-            { value: 'structure', label: 'Structure' },
-          ]}
-        />
+        <div className="flex flex-wrap items-center gap-2">
+          <Segmented<GroupFilter>
+            value={group}
+            onChange={setGroup}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'scale', label: 'Scale' },
+              { value: 'cut', label: 'Cut / Pause' },
+              { value: 'creative', label: 'Creative' },
+              { value: 'structure', label: 'Structure' },
+            ]}
+          />
+          <Segmented<'all' | EntityLevel>
+            size="sm"
+            value={level}
+            onChange={setLevel}
+            options={[
+              { value: 'all', label: 'All levels' },
+              { value: 'ad', label: 'Ad' },
+              { value: 'adset', label: 'Ad set' },
+              { value: 'campaign', label: 'Campaign' },
+              { value: 'client', label: 'Account' },
+            ]}
+          />
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <Segmented<'priority' | 'impact'>
             size="sm"

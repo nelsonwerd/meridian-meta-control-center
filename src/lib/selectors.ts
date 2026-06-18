@@ -97,3 +97,21 @@ export function lastNDays(n: number, endOffset = 0): DateRange {
 export function rangeOf(start: string, end: string): DateRange {
   return { preset: 'custom', start, end, label: 'custom' }
 }
+
+/** Human-readable parent path for an entity (ad → "Ad set › Campaign", adset →
+ *  "Campaign"). Disambiguates non-unique entity names on suggestion cards + the
+ *  drawer header — ad names recur across ad sets, so the name alone isn't specific. */
+export function parentPath(ds: Dataset, level: EntityLevel, entityId: string): string {
+  if (level === 'ad') {
+    const ad = ds.adById.get(entityId)
+    if (!ad) return ''
+    const set = ds.adSetById.get(ad.adSetId)
+    const cmp = ds.campaignById.get(ad.campaignId)
+    return [set?.name, cmp?.name].filter(Boolean).join(' › ')
+  }
+  if (level === 'adset') {
+    const set = ds.adSetById.get(entityId)
+    return set ? (ds.campaignById.get(set.campaignId)?.name ?? '') : ''
+  }
+  return '' // campaign name IS the entity name; client/account have no in-feed parent
+}
