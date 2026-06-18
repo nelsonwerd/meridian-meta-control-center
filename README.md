@@ -61,9 +61,13 @@ src/
   components/           ui primitives · charts · blocks · shell
   screens/              the pages
   app/                  store (zustand) · router · shell
-docs/                   kickoff · concept brief · deep-dive · prompt pack
-                        · LEDGER (honest status) · META_INTEGRATION · research/
+docs/                   see docs/README.md for the index — engineering guides
+                        (META_INTEGRATION · LEDGER · live-integration pack),
+                        API/ad-ops reference (research/), audit evidence (audit/),
+                        and build-process artifacts
 ```
+
+**New here?** [`docs/README.md`](docs/README.md) indexes every doc by purpose.
 
 ## Honest status
 

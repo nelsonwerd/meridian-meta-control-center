@@ -8,7 +8,11 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "clsx": "^2.1.1",

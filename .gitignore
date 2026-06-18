@@ -8,3 +8,6 @@ dist-ssr
 !.env.example
 *.log
 .vite
+
+# TypeScript incremental build cache
+*.tsbuildinfo

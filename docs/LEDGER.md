@@ -137,7 +137,7 @@ build is in a trustworthy, ship-as-first-draft state."*
 ## Round 3 — deep-dive audit → build-loop hardening
 
 A full `deep-dive` (5 specialist lanes → synthesis → red-team, evidence in
-`research/meridian-audit/`) rated the build **8/10** ("faithful, honest first
+`docs/audit/`) rated the build **8/10** ("faithful, honest first
 draft; safe for internal demo testing after one blocker"). A `build-loop` then
 drove the prioritized fixes over **5 iterations**, each re-verified live:
 
