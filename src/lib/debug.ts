@@ -106,5 +106,4 @@ window.__meridian = {
   },
 }
 
-// eslint-disable-next-line no-console
 console.log('[meridian] debug surface ready — window.__meridian.summary()')
