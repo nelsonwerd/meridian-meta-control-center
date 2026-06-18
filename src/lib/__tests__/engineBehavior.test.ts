@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { analyzeAd } from '../ai/engine'
+import { analyzeAd, analyzeAudienceExpansion } from '../ai/engine'
 import { DATA_TODAY } from '../demo/generate'
 import { addDays } from '../metrics'
 import type { Dataset } from '../demo/generate'
@@ -68,5 +68,37 @@ describe('analyzeAd — DOA gating (#22)', () => {
     const ds = miniDataset(buildInsights({ impressions: 4000, linkClicks: 60, spend: 30, dailyPurchases: [1, 0, 1, 0, 1, 0, 0] }))
     const s = analyzeAd(ds, ad, client)
     expect(s?.type).not.toBe('PAUSE_ENTITY')
+  })
+})
+
+describe('analyzeAudienceExpansion — ad-set audience expansion (#W2.4)', () => {
+  const aboCampaign: Campaign = { ...campaign, budgetType: 'ABO' }
+
+  function saturatingDs(audienceType: AdSet['audience']['type']): Dataset {
+    const set: AdSet = { ...adSet, audience: { type: audienceType, label: 'X', sizeEstimate: 500_000 } }
+    const dates = Array.from({ length: 7 }, (_, i) => addDays(DATA_TODAY, -(6 - i)))
+    const insights: Insight[] = dates.map((date) => ({
+      adId: ad.id, clientId: client.id, date,
+      spend: 20, impressions: 10_000, reach: 2_000, // frequency 5 → saturating
+      clicks: 130, linkClicks: 110, purchases: 1, revenue: 80,
+      addToCart: 4, landingPageViews: 90, videoPlays: 0, video3s: 0, videoThruplays: 0,
+    }))
+    return {
+      campaignsByClient: new Map([[client.id, [aboCampaign]]]),
+      adSetsByCampaign: new Map([[aboCampaign.id, [set]]]),
+      adsByAdSet: new Map([[set.id, [ad]]]),
+      insightsByAd: new Map([[ad.id, insights]]),
+    } as unknown as Dataset
+  }
+
+  it('flags a saturating, in-target narrow (interest) audience to expand', () => {
+    const out = analyzeAudienceExpansion(saturatingDs('interest'), client)
+    expect(out).toHaveLength(1)
+    expect(out[0].type).toBe('EXPAND_AUDIENCE')
+    expect(out[0].level).toBe('adset')
+  })
+
+  it('does NOT flag an already-broad audience', () => {
+    expect(analyzeAudienceExpansion(saturatingDs('broad'), client)).toHaveLength(0)
   })
 })

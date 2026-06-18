@@ -1,6 +1,7 @@
 import type { Dataset } from '../demo/generate'
 import type {
   Ad,
+  AudienceType,
   Client,
   EntityLevel,
   EntityStatus,
@@ -257,6 +258,35 @@ function analyzeReallocation(ds: Dataset, client: Client, t: typeof T = T): Sugg
   })
 }
 
+/** Ad-set level: a narrow audience that's saturating (high frequency) but still
+ *  converting in-target — broaden it to capture incremental volume before rising
+ *  frequency inflates CPA. Only narrow/expandable audiences qualify (not broad /
+ *  Advantage+, which are already maximally broad). */
+export function analyzeAudienceExpansion(ds: Dataset, client: Client, t: typeof T = T): Suggestion[] {
+  const out: Suggestion[] = []
+  const expandable = new Set<AudienceType>(['interest', 'lookalike', 'retargeting'])
+  const sets = (ds.campaignsByClient.get(client.id) ?? []).flatMap((c) => ds.adSetsByCampaign.get(c.id) ?? [])
+  for (const s of sets) {
+    if (s.status !== 'ACTIVE' || !expandable.has(s.audience.type)) continue
+    const m7 = metricsForAdIds(ds, (ds.adsByAdSet.get(s.id) ?? []).map((a) => a.id), lastNDays(7))
+    const inTarget = m7.cpa > 0 && m7.cpa <= client.targetCPA
+    if (m7.purchases >= t.minPurchasesToJudge && inTarget && m7.frequency > t.scaleMaxFrequency) {
+      out.push(
+        build('EXPAND_AUDIENCE', 'low', 'adset', s.id, s.name, client.id, {
+          title: `Expand audience — freq ${m7.frequency.toFixed(1)} at a winning ${money(m7.cpa)} CPA`,
+          rationale: `“${s.name}” is converting in-target (${money(m7.cpa)} CPA vs the ${money(client.targetCPA)} target) but frequency has climbed to ${m7.frequency.toFixed(1)} — the ${s.audience.type} audience is saturating. Broaden it (a fresh lookalike, or a broad/Advantage+ test) to find incremental volume at a similar CPA before rising frequency inflates it.`,
+          evidence: [`Freq ${m7.frequency.toFixed(1)}`, `${money(m7.cpa)} CPA`, `${m7.purchases} orders/7d`, `${s.audience.type} audience`],
+          impact: { metric: '+Reach', change: 0.1, note: 'incremental volume at similar CPA' },
+          confidence: 0.62,
+          impactScore: m7.spend / 7,
+          action: { kind: 'duplicate', label: 'Plan expansion', targetEntityId: s.id, targetLevel: 'adset' },
+        }),
+      )
+    }
+  }
+  return out
+}
+
 /** Client-level budget pacing alert (over/under run-rate vs the monthly budget). */
 function analyzePacing(ds: Dataset, client: Client): Suggestion | null {
   const adIds = adIdsForClient(ds, client.id)
@@ -365,6 +395,7 @@ export function analyzeClient(ds: Dataset, clientId: string): Suggestion[] {
   out.push(...analyzeAdSets(ds, client, t))
   const realloc = analyzeReallocation(ds, client, t)
   if (realloc) out.push(realloc)
+  out.push(...analyzeAudienceExpansion(ds, client, t))
   // Dedup by id, keeping the highest-CONFIDENCE sibling: several ads in one CBO
   // campaign resolve to the same budget-holder and emit the identical SCALE_BUDGET
   // id. impactScore is identical across them (derived from the shared holder), so

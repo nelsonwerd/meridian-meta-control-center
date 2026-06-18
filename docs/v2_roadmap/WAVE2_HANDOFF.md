@@ -30,10 +30,13 @@ a performance agency; tone: blunt, honest, no overselling.
      `src/screens/SettingsScreen.tsx`, `src/lib/selectors.ts`.
 
 ## Wave 2 scope (build to "the best it can be")
-- **W2.1 — per-client threshold overrides threaded through the engine + creative.ts (HIGH risk).**
-- **W2.2 — threshold-overrides + conservative/balanced/aggressive presets UI in Settings.**
-- **W2.3 — the entity-detail drawer (slide-over) + click-through everywhere.**
-- **W2.4 — new higher-level engine rules (campaign structure/scaling, ad-set audience-expansion).**
+- ✅ **W2.1 — per-client threshold overrides threaded through engine + creative.** DONE (commit `4d5346c`): `effectiveThresholds`/`setActiveClientThresholds`/presets in `thresholds.ts`; engine + creative thread `t`; store wired; 42 tests green.
+- ✅ **W2.2 — threshold-overrides + presets UI in Settings.** DONE (commit `8d06645`): per-client preset selector + expandable advanced overrides panel; verified live.
+- ✅ **W2.3 — the entity-detail drawer (slide-over) + click-through.** DONE: accessible right slide-over (`EntityDrawer.tsx`, focus-trap/ESC/scroll-lock/`role=dialog`) opened from a store `drawer` field; opens from `SuggestionCard` (title + card body) and `Campaigns` rows (campaign/adset/ad name buttons). Verified live.
+- ✅ **W2.4 — new higher-level engine rule.** DONE: `analyzeAudienceExpansion` (ad-set EXPAND_AUDIENCE — saturating narrow audience at in-target CPA); surfaces in the demo; 2 tests. The feed now shows recs across ad/adset/campaign/account levels.
+
+## ✅ WAVE 2 COMPLETE
+All four sub-phases shipped + verified (44 tests, lint/tsc/build green, live-checked). Branch `feat/v2-wave1` (pushed). **Next: Wave 3** (Decision & Outcome Ledger Tier 1 + Tier 2 design) per `03_PROMPT_PACK.md` — the drawer's history section is already a stub ready to wire.
 
 ## The threading approach (IMPORTANT — decided, may differ from a literal reading of 02)
 The validated arch suggested an "optional trailing `t = T` arg." The chosen
