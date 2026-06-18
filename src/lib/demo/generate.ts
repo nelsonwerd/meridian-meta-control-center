@@ -23,17 +23,12 @@ import {
   HEADLINE_POOL,
 } from './catalog'
 import { chance, clamp, intRange, jitter, pick, poisson, range, rngFor, sample } from '../rng'
+import { addDays } from '../date'
 
 /** Data anchor — the demo's "today". Keeps the 90-day story stable regardless of
  *  the real wall-clock. Date helpers treat this as now. */
 export const DATA_TODAY: ISODate = '2026-06-17'
 export const WINDOW_DAYS = 90
-
-function addDays(iso: ISODate, days: number): ISODate {
-  const d = new Date(iso + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
 
 /** Build the ascending list of ISO dates in the demo window (oldest → today). */
 export function windowDates(): ISODate[] {
@@ -108,7 +103,10 @@ function makeCreatives(client: Client): Array<{ creative: Creative; profile: Cre
   const out: Array<{ creative: Creative; profile: CreativeProfile }> = []
   for (let i = 0; i < count; i++) {
     const angle = pick(rng, CREATIVE_ANGLES)
-    const format: CreativeFormat = chance(rng, 0.58) ? 'video' : chance(rng, 0.6) ? 'image' : 'carousel'
+    // Weighted format mix (one draw): ~video 50% / image 30% / carousel 20% — so
+    // carousel isn't vanishingly rare as the old nested-chance form made it (~17%).
+    const fr = rng()
+    const format: CreativeFormat = fr < 0.5 ? 'video' : fr < 0.8 ? 'image' : 'carousel'
     const batch = pick(rng, batches.slice(0, client.status === 'onboarding' ? 2 : 5))
     const ratio = format === 'video' ? (chance(rng, 0.6) ? '9:16' : '4:5') : chance(rng, 0.5) ? '1:1' : '4:5'
     // intrinsic quality, biased by angle + a few designated winners/weak ones
@@ -356,7 +354,10 @@ function generateForClient(client: Client): {
       const chosenCreatives = sample(rng, creatives, nAds)
       for (let a = 0; a < nAds; a++) {
         const archetype = pickArchetype(rng, tpl.kind)
-        const creative = chosenCreatives[a] ?? pick(rng, creatives)
+        // sample() returns min(nAds, creatives.length) items; nAds (2–4) << creatives
+        // (≥7), so chosenCreatives[a] is always defined. Defensive fallback is
+        // non-drawing (a modulo wrap) so it can never perturb the seeded rng stream.
+        const creative = chosenCreatives[a] ?? chosenCreatives[a % chosenCreatives.length]
         const profile = profileByCreative.get(creative.id)!
         // spend share: distribute the ad set / campaign budget across ads by archetype weight
         const parentDaily = adSetDaily ?? (campaignBudget ? campaignBudget / Math.max(1, tpl.adSets.length) : dailyTotalForClient * 0.08)

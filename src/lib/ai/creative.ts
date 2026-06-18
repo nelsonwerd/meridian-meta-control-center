@@ -73,6 +73,8 @@ function diagnose(
     if (m.hookRate / 100 < T.hookRateFloor) {
       return { diagnosis: 'hook_weak', detail: `Hook rate ${m.hookRate.toFixed(0)}% (3s/impr) is below the ${(T.hookRateFloor * 100).toFixed(0)}% floor — the first 3 seconds aren't stopping the scroll. Re-cut the opener.` }
     }
+    // NB: holdRate here is thruplay/3s; the 30% floor (T.holdRateFloor) is lifted
+    // from the 15s/3s retention benchmark — directionally comparable, not identical.
     if (m.holdRate / 100 < T.holdRateFloor) {
       return { diagnosis: 'body_weak', detail: `Good hook (${m.hookRate.toFixed(0)}%) but only ${m.holdRate.toFixed(0)}% hold to thruplay — the body loses them. Tighten the middle / get to the value faster.` }
     }
@@ -146,11 +148,14 @@ export function nextBatchPlan(ds: Dataset, clientId: string, range: DateRange): 
   const bestFormat = sortedFormats[0]
 
   if (bestAngle && bestAngle.metrics.cpa <= client.targetCPA) {
+    // Pair the best angle with the best-performing format only if we have one — no
+    // hardcoded "video" guess. cohort.key is the raw format ('video'/'image'/
+    // 'carousel'); compare on it, not the title-cased label.
     doubleDown.push({
-      label: `${bestAngle.label} (${bestFormat ? bestFormat.label : 'video'})`,
+      label: bestFormat ? `${bestAngle.label} (${bestFormat.label})` : bestAngle.label,
       reason: `${money(bestAngle.metrics.cpa)} CPA, ${bestAngle.metrics.ctr.toFixed(2)}% CTR — your strongest angle. Produce 3–4 fresh variations next batch.`,
     })
-    testIdeas.push(`Spin ${bestAngle.label} into a new hook + a ${bestFormat?.label === 'Video' ? 'static cutdown' : 'video cut'}.`)
+    testIdeas.push(`Spin ${bestAngle.label} into a new hook + a ${bestFormat?.key === 'video' ? 'static cutdown' : 'video cut'}.`)
   }
   if (bestFormat) {
     testIdeas.push(`Lead the next batch with ${bestFormat.label.toLowerCase()} — it's carrying ${money(bestFormat.metrics.cpa)} CPA here.`)
