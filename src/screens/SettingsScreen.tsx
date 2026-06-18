@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle2, Cpu, KeyRound, Plug, RefreshCw, RotateCcw, Sliders, Workflow } from 'lucide-react'
+import { Fragment, useEffect, useState } from 'react'
+import { AlertTriangle, CheckCircle2, ChevronDown, Cpu, KeyRound, Plug, RefreshCw, RotateCcw, Sliders, Workflow } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { Avatar, Chip, SectionHeader, Segmented } from '../components/ui/primitives'
 import { useSnapshot } from '../app/hooks'
@@ -8,7 +8,7 @@ import { createProvider, getProviderMode, type ProviderMode } from '../lib/provi
 import { API_VERSION, saveLiveConfig, type LiveConfig } from '../lib/provider/liveProvider'
 import { WINDOW_DAYS } from '../lib/demo/generate'
 import { NARRATIVE_MODEL, PROXY_ENDPOINT, STRATEGY_MODEL, USE_LLM } from '../lib/ai/llm'
-import { EDITABLE_THRESHOLDS, THRESHOLDS } from '../lib/ai/thresholds'
+import { EDITABLE_THRESHOLDS, THRESHOLDS, effectiveThresholds, type Preset } from '../lib/ai/thresholds'
 import { breakevenRoas } from '../lib/metrics'
 import { fmtRoas } from '../lib/format'
 import type { ClientConfig } from '../lib/config'
@@ -247,17 +247,29 @@ function Field({ icon, label, value, tone }: { icon: React.ReactNode; label: str
 
 const clampMargin = (v: number) => Math.max(0.01, Math.min(0.99, v))
 
-/** Per-client targets editor — writes overrides through the store's ConfigStore
- *  (applied onto the snapshot's Client objects, so the engine re-scores instantly). */
+const PRESETS: { value: Preset; label: string }[] = [
+  { value: 'conservative', label: 'Cons' },
+  { value: 'balanced', label: 'Bal' },
+  { value: 'aggressive', label: 'Aggr' },
+]
+
+/** Per-client targets + engine tuning. Writes overrides through the store's
+ *  ConfigStore — targets apply onto the snapshot Clients, thresholds/preset flow to
+ *  the engine via effectiveThresholds — so Recommendations + Creative Lab re-score
+ *  instantly for that client and persist. */
 function TargetsEditor() {
   const snapshot = useSnapshot()!
   const clientConfig = useStore((s) => s.clientConfig)
   const setClientConfig = useStore((s) => s.setClientConfig)
   const resetClientConfig = useStore((s) => s.resetClientConfig)
+  const [openTuning, setOpenTuning] = useState<string | null>(null)
 
   const update = (clientId: string, patch: Partial<ClientConfig>) => {
     const existing = clientConfig[clientId] ?? { clientId, updatedAt: '' }
     setClientConfig({ ...existing, ...patch, clientId, updatedAt: new Date().toISOString() })
+  }
+  const setOverride = (clientId: string, key: keyof typeof THRESHOLDS, value: number) => {
+    update(clientId, { thresholdOverrides: { ...(clientConfig[clientId]?.thresholdOverrides ?? {}), [key]: value } })
   }
 
   return (
@@ -265,8 +277,8 @@ function TargetsEditor() {
       <div className="border-b border-line px-6 py-4">
         <SectionHeader
           eyebrow="Per client"
-          title="Targets & goals"
-          subtitle="Each client's north-star CPA / ROAS, budget, and unit economics. The engine scores against these — edits re-derive every screen and persist."
+          title="Targets & tuning"
+          subtitle="Each client's targets, economics, and engine aggressiveness. The engine scores every client against its OWN settings — edits re-derive every screen and persist."
         />
       </div>
       <div className="overflow-x-auto">
@@ -279,42 +291,89 @@ function TargetsEditor() {
               <th className="px-3 py-2.5 font-medium">Monthly budget</th>
               <th className="px-3 py-2.5 font-medium">AOV</th>
               <th className="px-3 py-2.5 font-medium">Margin</th>
-              <th className="px-3 py-2.5 font-medium">Breakeven ROAS</th>
+              <th className="px-3 py-2.5 font-medium">Breakeven</th>
+              <th className="px-3 py-2.5 font-medium">Engine preset</th>
               <th className="px-3 py-2.5" />
             </tr>
           </thead>
           <tbody>
-            {snapshot.clients.map((c) => (
-              <tr key={c.id} className="border-b border-line/60 last:border-0">
-                <td className="px-6 py-2">
-                  <div className="flex items-center gap-2.5">
-                    <Avatar monogram={c.monogram} color={c.accentColor} size={26} />
-                    <span className="font-medium text-ink">{c.name}</span>
-                  </div>
-                </td>
-                <td className="px-3 py-2"><NumCell value={c.targetCPA} step={1} prefix="$" onCommit={(v) => update(c.id, { targetCPA: v })} /></td>
-                <td className="px-3 py-2"><NumCell value={c.targetROAS} step={0.1} suffix="×" onCommit={(v) => update(c.id, { targetROAS: v })} /></td>
-                <td className="px-3 py-2"><NumCell value={c.monthlyBudget} step={100} prefix="$" onCommit={(v) => update(c.id, { monthlyBudget: v })} /></td>
-                <td className="px-3 py-2"><NumCell value={c.avgOrderValue} step={1} prefix="$" onCommit={(v) => update(c.id, { avgOrderValue: v })} /></td>
-                <td className="px-3 py-2"><NumCell value={Math.round(c.contributionMargin * 100)} step={1} suffix="%" onCommit={(v) => update(c.id, { contributionMargin: clampMargin(v / 100) })} /></td>
-                <td className="px-3 py-2.5 font-mono text-xs tabular-nums text-ink-muted">{fmtRoas(breakevenRoas(c.contributionMargin))}</td>
-                <td className="px-3 py-2.5 text-right">
-                  {clientConfig[c.id] && (
-                    <button
-                      onClick={() => resetClientConfig(c.id)}
-                      className="rounded-md px-2 py-1 text-2xs font-medium text-ink-subtle transition-colors hover:bg-surface-3 hover:text-ink"
-                    >
-                      Reset
-                    </button>
+            {snapshot.clients.map((c) => {
+              const cfg = clientConfig[c.id]
+              const preset = cfg?.preset ?? 'balanced'
+              const overrideCount = cfg?.thresholdOverrides ? Object.keys(cfg.thresholdOverrides).length : 0
+              const open = openTuning === c.id
+              return (
+                <Fragment key={c.id}>
+                  <tr className="border-b border-line/60">
+                    <td className="px-6 py-2">
+                      <div className="flex items-center gap-2.5">
+                        <Avatar monogram={c.monogram} color={c.accentColor} size={26} />
+                        <span className="font-medium text-ink">{c.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2"><NumCell value={c.targetCPA} step={1} prefix="$" onCommit={(v) => update(c.id, { targetCPA: v })} /></td>
+                    <td className="px-3 py-2"><NumCell value={c.targetROAS} step={0.1} suffix="×" onCommit={(v) => update(c.id, { targetROAS: v })} /></td>
+                    <td className="px-3 py-2"><NumCell value={c.monthlyBudget} step={100} prefix="$" onCommit={(v) => update(c.id, { monthlyBudget: v })} /></td>
+                    <td className="px-3 py-2"><NumCell value={c.avgOrderValue} step={1} prefix="$" onCommit={(v) => update(c.id, { avgOrderValue: v })} /></td>
+                    <td className="px-3 py-2"><NumCell value={Math.round(c.contributionMargin * 100)} step={1} suffix="%" onCommit={(v) => update(c.id, { contributionMargin: clampMargin(v / 100) })} /></td>
+                    <td className="px-3 py-2.5 font-mono text-xs tabular-nums text-ink-muted">{fmtRoas(breakevenRoas(c.contributionMargin))}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <Segmented<Preset> size="sm" value={preset} onChange={(p) => update(c.id, { preset: p })} options={PRESETS} />
+                        <button
+                          onClick={() => setOpenTuning(open ? null : c.id)}
+                          aria-expanded={open}
+                          title="Advanced threshold overrides"
+                          className={cn('flex items-center gap-1 rounded-md px-1.5 py-1 text-2xs font-medium transition-colors', open ? 'bg-surface-3 text-ink' : 'text-ink-subtle hover:text-ink')}
+                        >
+                          <Sliders className="h-3 w-3" />
+                          {overrideCount > 0 && <span className="text-brand">{overrideCount}</span>}
+                          <ChevronDown className={cn('h-3 w-3 transition-transform', open && 'rotate-180')} />
+                        </button>
+                      </div>
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      {cfg && (
+                        <button
+                          onClick={() => { resetClientConfig(c.id); if (open) setOpenTuning(null) }}
+                          className="rounded-md px-2 py-1 text-2xs font-medium text-ink-subtle transition-colors hover:bg-surface-3 hover:text-ink"
+                        >
+                          Reset
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {open && (
+                    <tr className="border-b border-line/60 bg-surface-2/40">
+                      <td colSpan={9} className="px-6 py-4">
+                        <div className="mb-3 text-2xs uppercase tracking-wide text-ink-subtle">
+                          Advanced thresholds for {c.name} — override only what differs; blank/base falls through to the global default (and the preset)
+                        </div>
+                        <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
+                          {EDITABLE_THRESHOLDS.map((t) => {
+                            const overridden = cfg?.thresholdOverrides?.[t.key] !== undefined
+                            return (
+                              <div key={t.key} className="flex items-center justify-between gap-2">
+                                <span className={cn('text-xs', overridden ? 'text-brand' : 'text-ink-muted')}>{t.label}</span>
+                                <div className="flex items-center gap-2">
+                                  <NumCell value={effectiveThresholds(c.id)[t.key]} step={t.step} onCommit={(v) => setOverride(c.id, t.key, v)} />
+                                  <span className="w-20 text-right text-2xs text-ink-subtle">base {t.fmt(THRESHOLDS[t.key])}</span>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      </td>
+                    </tr>
                   )}
-                </td>
-              </tr>
-            ))}
+                </Fragment>
+              )
+            })}
           </tbody>
         </table>
       </div>
       <p className="border-t border-line px-6 py-3 text-2xs leading-relaxed text-ink-subtle">
-        Breakeven ROAS = 1 / contribution margin — the bar the engine judges ROAS against. Overrides persist on this device and graduate to your backend when wired.
+        A preset shifts the engine's aggression as a bundle; advanced overrides tune individual thresholds for this client only (most specific wins, over preset, over the global default). Everything re-scores Recommendations + Creative Lab live and persists.
       </p>
     </section>
   )
