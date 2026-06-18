@@ -56,6 +56,9 @@ export interface AdAccount {
   name: string
   currency: string
   timezone: string
+  /** Meta's minor-unit multiplier for budgets (100 for USD, 1 for JPY, …). Sourced
+   *  per-account from the Graph API in live mode; optional (demo doesn't set it). */
+  currency_offset?: number
 }
 
 export type CampaignObjective =
@@ -242,6 +245,8 @@ export interface KpiDelta {
   higherIsBetter: boolean
   /** volume/context metric where a change has no inherent good/bad (e.g. spend) */
   neutral: boolean
+  /** no prior-period baseline (prev === 0, current !== 0) — render "new", not +100% */
+  isNew: boolean
 }
 
 /* ----- AI engine output shapes ----- */
@@ -342,6 +347,9 @@ export interface WeeklyReport {
   weekStart: ISODate
   weekEnd: ISODate
   headline: string
+  /** overall sentiment of the week, aligned to the headline — drives the digest
+   *  icon so it can never disagree with the prose. */
+  direction: 'positive' | 'caution' | 'neutral'
   summary: string
   current: MetricsBundle
   previous: MetricsBundle

@@ -91,7 +91,7 @@ export const KPI_LABELS: Record<string, string> = {
   cpc: 'CPC',
   cpm: 'CPM',
   aov: 'AOV',
-  frequency: 'Frequency',
+  frequency: 'Avg daily frequency',
   cvr: 'CVR',
   hookRate: 'Hook rate',
   holdRate: 'Hold rate',

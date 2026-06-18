@@ -1,5 +1,10 @@
 import type { DateRange, Insight, ISODate, KpiDelta, MetricsBundle, RangePreset, TimeseriesPoint } from './types'
 import { DATA_TODAY, WINDOW_DAYS } from './demo/generate'
+import { addDays, daysBetween } from './date'
+
+// addDays/daysBetween live in ./date (dependency-free); re-exported here so the
+// many existing importers of these from './metrics' keep working unchanged.
+export { addDays, daysBetween }
 
 /* ============================================================================
    Metrics + date math. All rate KPIs are derived here from additive base facts
@@ -84,8 +89,11 @@ export function kpiDelta(key: keyof MetricsBundle, current: number, prev: number
   const neutral = NEUTRAL_KEYS.has(key as string)
   const higherIsBetter = HIGHER_IS_BETTER[key] ?? true
   const delta = current - prev
+  // No prior-period baseline → there is no honest percentage; flag isNew so the UI
+  // renders "new" instead of a fabricated +100%.
+  const isNew = prev === 0 && current !== 0
   const deltaPct = prev !== 0 ? delta / Math.abs(prev) : current !== 0 ? 1 : 0
-  return { value: current, prevValue: prev, delta, deltaPct, higherIsBetter, neutral }
+  return { value: current, prevValue: prev, delta, deltaPct, higherIsBetter, neutral, isNew }
 }
 
 /** Whether a delta should read as "good" (green) given the KPI's direction.
@@ -102,16 +110,6 @@ export function deltaIsGood(d: KpiDelta): boolean | null {
 
 export function today(): ISODate {
   return DATA_TODAY
-}
-
-export function addDays(iso: ISODate, days: number): ISODate {
-  const d = new Date(iso + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-
-export function daysBetween(a: ISODate, b: ISODate): number {
-  return Math.round((Date.parse(b) - Date.parse(a)) / 86_400_000)
 }
 
 export function enumerateDates(start: ISODate, end: ISODate): ISODate[] {

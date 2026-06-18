@@ -10,9 +10,9 @@ import type {
   Suggestion,
   SuggestionType,
 } from '../types'
-import { aggregate, daysBetween, filterByRange, today } from '../metrics'
+import { today } from '../metrics'
 import { clamp } from '../rng'
-import { adIdsForClient, clientsForScope, insightsForAdIds, lastNDays, metricsForAdIds } from '../selectors'
+import { adIdsForClient, clientsForScope, computePacing, lastNDays, metricsForAdIds } from '../selectors'
 import { THRESHOLDS as T } from './thresholds'
 
 /* ============================================================================
@@ -46,8 +46,9 @@ function mkId(type: SuggestionType, entityId: string) {
   return `sg_${type}_${entityId}`
 }
 
-/** Analyze a single ad and return at most one suggestion (precedence-ordered). */
-function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
+/** Analyze a single ad and return at most one suggestion (precedence-ordered).
+ *  Exported for unit tests that exercise a single ad's gating decision directly. */
+export function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
   if (ad.status === 'PAUSED' || ad.status === 'ARCHIVED') return null
   const ids = [ad.id]
   const m3 = metricsForAdIds(ds, ids, lastNDays(3))
@@ -64,11 +65,13 @@ function analyzeAd(ds: Dataset, ad: Ad, client: Client): Suggestion | null {
   const hasConvSignal = m7.purchases >= T.minPurchasesToJudge
   const hasImprSignal = m7.impressions >= T.minImpressionsToJudge
 
-  // ---- (1) DOA: enough impressions AND spend, no clicks, near-zero orders ----
-  //         All three of the playbook's Trigger-C clauses (impressions + spend +
-  //         CTR floor) must hold — never kill a creative before it's cleared the
-  //         minimum-signal spend gate.
-  if (hasImprSignal && hasSpendSignal && m7.ctr < T.doaCtrPct && m7.purchases <= 1) {
+  // ---- (1) DOA: enough impressions AND spend at a sub-floor CTR ----
+  //         The playbook's Trigger-C clauses — impressions signal + spend gate +
+  //         CTR floor. Purchase count is intentionally NOT gated: per the spec a
+  //         sub-0.5% CTR creative is failing to earn the click even if it scraped a
+  //         couple of orders (which would otherwise slip the >=5-order hard-cut and
+  //         the <=1-order pause). The rationale still reports the actual order count.
+  if (hasImprSignal && hasSpendSignal && m7.ctr < T.doaCtrPct) {
     return build('PAUSE_ENTITY', 'critical', 'ad', ad.id, ad.name, client.id, {
       title: `Pause DOA creative — ${m7.ctr.toFixed(2)}% CTR`,
       rationale: `This ad has spent ${money(m7.spend)} over 7 days at a ${m7.ctr.toFixed(2)}% link CTR (below the ${T.doaCtrPct}% floor) and only ${m7.purchases} order(s). The creative isn't earning the click — it's burning budget. Pause and reallocate.`,
@@ -233,9 +236,13 @@ function analyzeReallocation(ds: Dataset, client: Client): Suggestion | null {
     .map((s) => ({ s, m: metricsForAdIds(ds, (ds.adsByAdSet.get(s.id) ?? []).map((a) => a.id), lastNDays(7)) }))
     .filter((x) => x.m.purchases >= T.minPurchasesToJudge && x.m.spend > 0)
   if (scored.length < 3) return null
-  const cpas = scored.map((x) => x.m.cpa).sort((a, b) => a - b)
-  const best = cpas[0]
-  const worst = cpas[cpas.length - 1]
+  const byCpa = [...scored].sort((a, b) => a.m.cpa - b.m.cpa)
+  const best = byCpa[0].m.cpa
+  // The "worst" (high-CPA) end must carry enough volume to trust its CPA — else a
+  // single thin outlier just over the min-signal gate manufactures a fake spread.
+  // Fall back to the raw max only if no set clears the higher bar.
+  const worstEntry = [...byCpa].reverse().find((x) => x.m.purchases >= T.minPurchasesToJudge * 2) ?? byCpa[byCpa.length - 1]
+  const worst = worstEntry.m.cpa
   if (best <= 0) return null
   const spread = (worst - best) / best
   if (spread < T.reallocateCpaSpread) return null
@@ -253,12 +260,7 @@ function analyzeReallocation(ds: Dataset, client: Client): Suggestion | null {
 /** Client-level budget pacing alert (over/under run-rate vs the monthly budget). */
 function analyzePacing(ds: Dataset, client: Client): Suggestion | null {
   const adIds = adIdsForClient(ds, client.id)
-  const monthStart = today().slice(0, 8) + '01'
-  const mtd = aggregate(filterByRange(insightsForAdIds(ds, adIds), { preset: 'custom', start: monthStart, end: today(), label: '' }))
-  const dayOfMonth = daysBetween(monthStart, today()) + 1
-  const daysInMonth = new Date(Date.UTC(Number(today().slice(0, 4)), Number(today().slice(5, 7)), 0)).getUTCDate()
-  const projection = (mtd.spend / Math.max(1, dayOfMonth)) * daysInMonth
-  const pace = client.monthlyBudget > 0 ? projection / client.monthlyBudget : 1
+  const { spent, projection, pace, dayOfMonth, daysInMonth } = computePacing(ds, client.id)
   const recent = metricsForAdIds(ds, adIds, lastNDays(7))
   const onTarget = recent.cpa > 0 && recent.cpa <= client.targetCPA
   if (pace >= 1.12) {
@@ -266,7 +268,7 @@ function analyzePacing(ds: Dataset, client: Client): Suggestion | null {
     return build('PACING_ALERT', 'high', 'client', client.id, client.name, client.id, {
       title: `Pacing ${((pace - 1) * 100).toFixed(0)}% over budget`,
       rationale: `At the current run-rate, ${client.name} is projected to spend ${money(projection)} this month vs the ${money(client.monthlyBudget)} budget — ${((pace - 1) * 100).toFixed(0)}% over. ${onTarget ? 'CPA is in-target, so this may be intentional scaling — confirm the extra budget is approved.' : 'CPA is above target, so the overspend is buying expensive orders — pull daily budgets back.'}`,
-      evidence: [`Projected ${money(projection)}`, `Budget ${money(client.monthlyBudget)}`, `MTD ${money(mtd.spend)}`, `Day ${dayOfMonth}/${daysInMonth}`],
+      evidence: [`Projected ${money(projection)}`, `Budget ${money(client.monthlyBudget)}`, `MTD ${money(spent)}`, `Day ${dayOfMonth}/${daysInMonth}`],
       impact: { metric: 'Budget control', change: -(pace - 1), note: `~${money(overDaily)}/day over` },
       confidence: 0.8,
       impactScore: Math.abs(overDaily),
@@ -294,7 +296,10 @@ function analyzeAnomalies(ds: Dataset, client: Client): Suggestion[] {
   const out: Suggestion[] = []
   const adIds = adIdsForClient(ds, client.id)
   const recent = metricsForAdIds(ds, adIds, lastNDays(3))
-  const base = metricsForAdIds(ds, adIds, lastNDays(7, 3)) // days 4–10
+  // "prior week" baseline = days 4–10: the 7-day window immediately before the
+  // recent 3-day window (lastNDays(7, 3) ends 3 days ago), so the copy's
+  // "prior week" is an approximation of this adjacent comparison window.
+  const base = metricsForAdIds(ds, adIds, lastNDays(7, 3))
   // tracking break — spend continuing, conversions collapsed to zero
   if (base.purchases >= 20 && recent.spend >= (base.spend / 7) * 2 && recent.purchases === 0) {
     out.push(
@@ -357,12 +362,17 @@ export function analyzeClient(ds: Dataset, clientId: string): Suggestion[] {
   out.push(...analyzeAdSets(ds, client))
   const realloc = analyzeReallocation(ds, client)
   if (realloc) out.push(realloc)
-  // Dedup by id: several ads in one CBO campaign resolve to the same
-  // budget-holder, so they'd emit the identical SCALE_BUDGET suggestion. Keep the
-  // first (highest-signal, pushed in ad order) so the list + counts stay honest.
-  const seen = new Set<string>()
-  const deduped = out.filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)))
-  return sortSuggestions(deduped)
+  // Dedup by id, keeping the highest-CONFIDENCE sibling: several ads in one CBO
+  // campaign resolve to the same budget-holder and emit the identical SCALE_BUDGET
+  // id. impactScore is identical across them (derived from the shared holder), so
+  // confidence — which scales with the ad's order volume — is the honest tie-break.
+  // (sortSuggestions re-orders afterward, so map insertion order is moot.)
+  const byId = new Map<string, Suggestion>()
+  for (const s of out) {
+    const prev = byId.get(s.id)
+    if (!prev || s.confidence > prev.confidence) byId.set(s.id, s)
+  }
+  return sortSuggestions([...byId.values()])
 }
 
 export function analyzeScope(ds: Dataset, scope: Scope): Suggestion[] {

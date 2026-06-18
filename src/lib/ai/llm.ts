@@ -31,6 +31,10 @@ export interface NarrativeContext {
   suggestions: Suggestion[]
   targetCPA?: number
   targetROAS?: number
+  /** breakeven ROAS = 1 / contribution margin — the bar the system prompt judges
+   *  ROAS against (instead of a global 3x). */
+  breakevenRoas?: number
+  contributionMargin?: number
 }
 
 /** Build the system + user prompt the proxy forwards to the Anthropic API. */
@@ -46,6 +50,10 @@ export function buildNarrativePrompt(ctx: NarrativeContext): { system: string; u
   const lines = [
     `Scope: ${ctx.scope} · Window: ${ctx.rangeLabel}`,
     ctx.targetCPA ? `Target CPA: $${ctx.targetCPA} · Target ROAS: ${ctx.targetROAS}×` : '',
+    // Give the model the breakeven bar its system prompt is told to judge against.
+    ctx.breakevenRoas
+      ? `Breakeven ROAS: ${ctx.breakevenRoas.toFixed(2)}×${ctx.contributionMargin ? ` (contribution margin ${Math.round(ctx.contributionMargin * 100)}%)` : ''} — judge ROAS against THIS, not a global 3x`
+      : '',
     `Current: spend $${Math.round(m.spend)}, ${m.purchases} orders, CPA $${m.cpa.toFixed(2)}, ROAS ${m.roas.toFixed(2)}×, CTR ${m.ctr.toFixed(2)}%, freq ${m.frequency.toFixed(1)}`,
     ctx.previous ? `Prior: CPA $${ctx.previous.cpa.toFixed(2)}, ROAS ${ctx.previous.roas.toFixed(2)}×, orders ${ctx.previous.purchases}` : '',
     '',

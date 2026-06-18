@@ -1,7 +1,7 @@
 import type { Dataset } from '../demo/generate'
 import type { DateRange, ISODate, KpiDelta, MetricsBundle, WeeklyReport } from '../types'
-import { addDays, aggregate, daysBetween, filterByRange, fmtShort, kpiDelta, today } from '../metrics'
-import { adIdsForClient, metricsForAdIds } from '../selectors'
+import { addDays, kpiDelta, today } from '../metrics'
+import { adIdsForClient, computePacing, metricsForAdIds } from '../selectors'
 import { analyzeClient } from './engine'
 import { creativePerformance } from './creative'
 import { fmtCurrency, fmtDeltaPct, fmtRoas } from '../format'
@@ -74,21 +74,16 @@ export function buildWeeklyReport(ds: Dataset, clientId: string, weekOverride?: 
   const recommendations = analyzeClient(ds, clientId).slice(0, 5)
 
   // ----- pacing (MTD vs monthly budget) -----
-  const monthStart = today().slice(0, 8) + '01'
-  const mtdRows = filterByRange(adIds.flatMap((id) => ds.insightsByAd.get(id) ?? []), weekRange(monthStart, today(), ''))
-  const spent = aggregate(mtdRows).spend
-  const dayOfMonth = daysBetween(monthStart, today()) + 1
-  const daysInMonth = new Date(Date.UTC(Number(today().slice(0, 4)), Number(today().slice(5, 7)), 0)).getUTCDate()
-  const projection = (spent / dayOfMonth) * daysInMonth
-  const pace = client.monthlyBudget > 0 ? projection / client.monthlyBudget : 1
+  const { spent, projection, pace } = computePacing(ds, clientId)
 
-  const { headline, summary } = composeNarrative(client.name, kpis, pace, movers)
+  const { headline, summary, direction } = composeNarrative(client.name, kpis, pace, movers)
 
   return {
     clientId,
     weekStart: week.start,
     weekEnd: week.end,
     headline,
+    direction,
     summary,
     current,
     previous,
@@ -105,7 +100,7 @@ function composeNarrative(
   kpis: Record<string, KpiDelta>,
   pace: number,
   movers: WeeklyReport['topMovers'],
-): { headline: string; summary: string } {
+): { headline: string; summary: string; direction: WeeklyReport['direction'] } {
   const orders = kpis.purchases
   const cpa = kpis.cpa
   const roas = kpis.roas
@@ -125,12 +120,26 @@ function composeNarrative(
           ? `Efficiency improved week-over-week`
           : `Volume held, watch rising CPA`
 
+  // sentiment aligned to the headline branches — drives the digest icon so it can
+  // never disagree with the prose (efficiency leads, so it keys off CPA direction).
+  const direction: WeeklyReport['direction'] = flat ? 'neutral' : cpa.delta <= 0 ? 'positive' : 'caution'
+
   const absPct = (frac: number) => `${Math.round(Math.abs(frac) * 100)}%`
+  // No prior-week baseline → state the level, not a fabricated +100% / WoW move.
+  const ordersClause = orders.isNew
+    ? `drove ${Math.round(orders.value)} orders (new this week — no prior-week baseline)`
+    : `drove ${fmtDeltaPct(orders.deltaPct)} orders week-over-week (${ordersDir})`
+  const cpaClause = cpa.isNew
+    ? `at a ${fmtCurrency(cpa.value, { decimals: 2 })} CPA`
+    : `at a ${absPct(cpa.deltaPct)} ${cpaDir} CPA of ${fmtCurrency(cpa.value, { decimals: 2 })}`
+  const roasClause = roas.isNew
+    ? `ROAS came in at ${fmtRoas(roas.value)} (first week of data). `
+    : `ROAS came in at ${fmtRoas(roas.value)} (${fmtDeltaPct(roas.deltaPct)} WoW). `
   const summary =
-    `${name} drove ${fmtDeltaPct(orders.deltaPct)} orders week-over-week (${ordersDir}) at a ${absPct(cpa.deltaPct)} ${cpaDir} CPA of ${fmtCurrency(cpa.value, { decimals: 2 })}. ` +
-    `ROAS came in at ${fmtRoas(roas.value)} (${fmtDeltaPct(roas.deltaPct)} WoW). ` +
+    `${name} ${ordersClause} ${cpaClause}. ` +
+    roasClause +
     `Spend is pacing ${pace >= 1 ? `${fmtDeltaPct(pace - 1)} ahead of` : `${fmtDeltaPct(1 - pace)} under`} the monthly budget. ` +
     (movers[0] ? `Biggest mover: ${movers[0].label} — ${movers[0].detail}.` : '')
 
-  return { headline, summary }
+  return { headline, summary, direction }
 }

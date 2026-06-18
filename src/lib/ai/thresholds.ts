@@ -11,14 +11,14 @@ export const THRESHOLDS = {
   minSpendVsCPA: 1.0, // spend >= 1x target CPA
   minPurchasesToJudge: 3,
   minImpressionsToJudge: 2000,
-  /** confident keep/scale wants this much volume */
-  confidentPurchases: 30,
 
   /** SCALE a winner */
   scaleCpaRatio: 0.8, // CPA <= target * 0.8
   scaleMaxFrequency: 3.0,
   scaleMinPurchases7d: 25, // slightly under research's 30 to surface more in demo
   scaleStepPct: 0.2, // raise budget <= 20% per edit
+  // Reserved placeholder: the SCALE cooldown (days since last scale) isn't
+  // modelable in demo (no last-scaled timestamp); wired when live. See LEDGER.
   scaleCooldownDays: 3,
 
   /** CUT / PAUSE */
@@ -34,7 +34,6 @@ export const THRESHOLDS = {
 
   /** CONSOLIDATE */
   consolidateMinEventsPerWeek: 18, // below this per ad set → too sparse to exit learning
-  consolidateLearningDays: 7,
 
   /** CREATIVE FUNNEL DIAGNOSIS (video) */
   hookRateFloor: 0.25, // < 25% 3s/impr → weak first 3 seconds

@@ -1,6 +1,6 @@
 import type { Dataset } from './demo/generate'
 import type { DateRange, EntityLevel, Insight, MetricsBundle, Scope } from './types'
-import { addDays, aggregate, filterByRange, today } from './metrics'
+import { addDays, aggregate, daysBetween, filterByRange, today } from './metrics'
 
 /* Pure resolution helpers: entity → its ad ids → insight rows → metrics. Used by
    both the screens and the AI engine so they always agree on the numbers. */
@@ -62,6 +62,29 @@ export function metricsForEntity(ds: Dataset, level: EntityLevel, id: string, ra
 
 export function metricsForScope(ds: Dataset, scope: Scope, range: DateRange): MetricsBundle {
   return metricsForAdIds(ds, adIdsForScope(ds, scope), range)
+}
+
+export interface Pacing {
+  spent: number
+  projection: number
+  pace: number
+  dayOfMonth: number
+  daysInMonth: number
+}
+
+/** Month-to-date spend vs the client's monthly budget, with a run-rate projection.
+ *  Single source of truth for both the engine's pacing alert and the weekly report
+ *  (guards day-of-month against divide-by-zero). */
+export function computePacing(ds: Dataset, clientId: string): Pacing {
+  const client = ds.clientById.get(clientId)
+  const monthStart = today().slice(0, 8) + '01'
+  const spent = aggregate(filterByRange(insightsForAdIds(ds, adIdsForClient(ds, clientId)), rangeOf(monthStart, today()))).spend
+  const dayOfMonth = daysBetween(monthStart, today()) + 1
+  const daysInMonth = new Date(Date.UTC(Number(today().slice(0, 4)), Number(today().slice(5, 7)), 0)).getUTCDate()
+  const projection = (spent / Math.max(1, dayOfMonth)) * daysInMonth
+  const monthlyBudget = client?.monthlyBudget ?? 0
+  const pace = monthlyBudget > 0 ? projection / monthlyBudget : 1
+  return { spent, projection, pace, dayOfMonth, daysInMonth }
 }
 
 /* ----- ad-hoc windows for trend detection (anchored to DATA_TODAY) ----- */
