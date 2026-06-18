@@ -104,3 +104,45 @@ export const BENCHMARKS = {
   hookRate: { poor: 0.2, ok: 0.28, good: 0.4 },
   holdRate: { poor: 0.15, ok: 0.25, good: 0.35 },
 } as const
+
+/* ============================================================================
+   Per-client threshold resolution. The engine reads ONE effective threshold set
+   per client = live global THRESHOLDS → preset delta → explicit per-client
+   overrides (most specific wins). The active per-client config is a module-level
+   value the store sets (mirroring how setThreshold mutates the global THRESHOLDS),
+   so the engine resolves per client with no per-call threading from the screens.
+   ========================================================================== */
+
+export type Preset = 'conservative' | 'balanced' | 'aggressive'
+
+/** A preset shifts the core aggression knobs as a bundle. Conservative = scale
+ *  later / cut sooner / flag fatigue earlier; aggressive = the inverse. */
+const PRESET_DELTAS: Record<Preset, Partial<Record<keyof typeof THRESHOLDS, number>>> = {
+  balanced: {},
+  conservative: { scaleCpaRatio: 0.7, cutCpaRatio: 1.2, scaleMinPurchases7d: 30, fatigueFrequency: 2.8 },
+  aggressive: { scaleCpaRatio: 0.9, cutCpaRatio: 1.45, scaleMinPurchases7d: 18, fatigueFrequency: 3.5 },
+}
+
+/** Per-client threshold config — a structural subset of ClientConfig (kept local to
+ *  avoid a config→thresholds import cycle). */
+export interface ClientThresholdConfig {
+  thresholdOverrides?: Partial<Record<keyof typeof THRESHOLDS, number>>
+  preset?: Preset
+}
+
+let activeClientThresholds: Record<string, ClientThresholdConfig> = {}
+
+/** The store calls this whenever per-client config changes (and on load). */
+export function setActiveClientThresholds(map: Record<string, ClientThresholdConfig>) {
+  activeClientThresholds = map ?? {}
+}
+
+/** Effective engine thresholds for a client. Reads the LIVE THRESHOLDS so a global
+ *  slider still moves the base for any key the client hasn't overridden. Returns the
+ *  shared THRESHOLDS object unchanged when the client has no preset/overrides. */
+export function effectiveThresholds(clientId: string): typeof THRESHOLDS {
+  const cfg = activeClientThresholds[clientId]
+  if (!cfg || (!cfg.preset && !cfg.thresholdOverrides)) return THRESHOLDS
+  const presetDelta = cfg.preset && cfg.preset !== 'balanced' ? PRESET_DELTAS[cfg.preset] : {}
+  return { ...THRESHOLDS, ...presetDelta, ...(cfg.thresholdOverrides ?? {}) }
+}

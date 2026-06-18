@@ -8,7 +8,7 @@ import type {
 } from '../types'
 import { aggregate, filterByRange } from '../metrics'
 import { lastNDays } from '../selectors'
-import { THRESHOLDS as T, BENCHMARKS } from './thresholds'
+import { THRESHOLDS as T, BENCHMARKS, effectiveThresholds } from './thresholds'
 
 /* ============================================================================
    Creative analysis — performance vs the data, by creative / format / angle,
@@ -27,6 +27,7 @@ function metricsFor(ds: Dataset, adIds: string[], range: DateRange): MetricsBund
 
 export function creativePerformance(ds: Dataset, clientId: string, range: DateRange): CreativePerformance[] {
   const client = ds.clientById.get(clientId)!
+  const t = effectiveThresholds(clientId) // per-client thresholds — same source the engine uses
   const creatives = ds.creativesByClient.get(clientId) ?? []
   const rows: CreativePerformance[] = []
 
@@ -37,7 +38,7 @@ export function creativePerformance(ds: Dataset, clientId: string, range: DateRa
     if (m.impressions === 0) continue
     const m7 = metricsFor(ds, adIds, lastNDays(7))
     const mPrev7 = metricsFor(ds, adIds, lastNDays(7, 7))
-    const { diagnosis, detail } = diagnose(creative, m, m7, mPrev7, client.targetCPA)
+    const { diagnosis, detail } = diagnose(creative, m, m7, mPrev7, client.targetCPA, t)
     rows.push({ creative, metrics: m, adIds, diagnosis, diagnosisDetail: detail, cpaPercentile: 0 })
   }
 
@@ -56,37 +57,38 @@ function diagnose(
   m7: MetricsBundle,
   mPrev7: MetricsBundle,
   targetCPA: number,
+  t: typeof T = T,
 ): { diagnosis: CreativePerformance['diagnosis']; detail: string } {
   // not enough signal yet
-  if (m.spend < targetCPA * T.minSpendVsCPA || m.impressions < T.minImpressionsToJudge) {
+  if (m.spend < targetCPA * t.minSpendVsCPA || m.impressions < t.minImpressionsToJudge) {
     return { diagnosis: 'unproven', detail: `Only ${Math.round(m.spend)} spent / ${fmtInt(m.impressions)} impressions — needs more signal before judging.` }
   }
 
   // fatigue: frequency high and CTR fading recently
   const ctrFade = mPrev7.ctr > 0 ? (mPrev7.ctr - m7.ctr) / mPrev7.ctr : 0
-  if (m7.frequency > T.fatigueFrequency && ctrFade >= T.fatigueCtrDropWoW && m7.cpa > m.cpa) {
+  if (m7.frequency > t.fatigueFrequency && ctrFade >= t.fatigueCtrDropWoW && m7.cpa > m.cpa) {
     return { diagnosis: 'fatigued', detail: `Frequency ${m7.frequency.toFixed(1)} and CTR fading ${(ctrFade * 100).toFixed(0)}% WoW — audience saturated. Refresh the ${creative.angle} angle.` }
   }
 
   // video funnel checks (only meaningful for video)
   if (creative.format === 'video') {
-    if (m.hookRate / 100 < T.hookRateFloor) {
-      return { diagnosis: 'hook_weak', detail: `Hook rate ${m.hookRate.toFixed(0)}% (3s/impr) is below the ${(T.hookRateFloor * 100).toFixed(0)}% floor — the first 3 seconds aren't stopping the scroll. Re-cut the opener.` }
+    if (m.hookRate / 100 < t.hookRateFloor) {
+      return { diagnosis: 'hook_weak', detail: `Hook rate ${m.hookRate.toFixed(0)}% (3s/impr) is below the ${(t.hookRateFloor * 100).toFixed(0)}% floor — the first 3 seconds aren't stopping the scroll. Re-cut the opener.` }
     }
-    // NB: holdRate here is thruplay/3s; the 30% floor (T.holdRateFloor) is lifted
+    // NB: holdRate here is thruplay/3s; the 30% floor (t.holdRateFloor) is lifted
     // from the 15s/3s retention benchmark — directionally comparable, not identical.
-    if (m.holdRate / 100 < T.holdRateFloor) {
+    if (m.holdRate / 100 < t.holdRateFloor) {
       return { diagnosis: 'body_weak', detail: `Good hook (${m.hookRate.toFixed(0)}%) but only ${m.holdRate.toFixed(0)}% hold to thruplay — the body loses them. Tighten the middle / get to the value faster.` }
     }
   }
 
   // converts poorly despite engaging
-  if (m.ctr >= BENCHMARKS.ctr.ok && m.cvr / 100 < T.cvrFloor) {
+  if (m.ctr >= BENCHMARKS.ctr.ok && m.cvr / 100 < t.cvrFloor) {
     return { diagnosis: 'convert_weak', detail: `Strong CTR (${m.ctr.toFixed(2)}%) but ${m.cvr.toFixed(2)}% CVR — clicks aren't converting. The gap is the landing page / offer, not the ad.` }
   }
 
   // winner
-  if (m.cpa > 0 && m.cpa <= targetCPA * 0.9 && m.purchases >= T.minPurchasesToJudge) {
+  if (m.cpa > 0 && m.cpa <= targetCPA * 0.9 && m.purchases >= t.minPurchasesToJudge) {
     return { diagnosis: 'winner', detail: `${money(m.cpa)} CPA vs ${money(targetCPA)} target on ${fmtInt(m.purchases)} orders — a clear winner. Scale spend and spin variations of this ${creative.angle} concept.` }
   }
 
@@ -134,8 +136,9 @@ export interface NextBatchPlan {
 
 export function nextBatchPlan(ds: Dataset, clientId: string, range: DateRange): NextBatchPlan {
   const client = ds.clientById.get(clientId)!
-  const byAngle = creativeCohorts(ds, clientId, range, 'angle').filter((c) => c.metrics.purchases >= T.minPurchasesToJudge)
-  const byFormat = creativeCohorts(ds, clientId, range, 'format').filter((c) => c.metrics.purchases >= T.minPurchasesToJudge)
+  const t = effectiveThresholds(clientId)
+  const byAngle = creativeCohorts(ds, clientId, range, 'angle').filter((c) => c.metrics.purchases >= t.minPurchasesToJudge)
+  const byFormat = creativeCohorts(ds, clientId, range, 'format').filter((c) => c.metrics.purchases >= t.minPurchasesToJudge)
   const sortedAngles = [...byAngle].sort((a, b) => a.metrics.cpa - b.metrics.cpa)
   const sortedFormats = [...byFormat].sort((a, b) => a.metrics.cpa - b.metrics.cpa)
 

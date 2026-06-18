@@ -9,7 +9,7 @@ import {
   type Snapshot,
 } from '../lib/provider'
 import { makeRange } from '../lib/metrics'
-import { loadThresholds, resetThresholds as applyResetThresholds, setThreshold as applyThreshold } from '../lib/ai/thresholds'
+import { loadThresholds, resetThresholds as applyResetThresholds, setActiveClientThresholds, setThreshold as applyThreshold } from '../lib/ai/thresholds'
 import { createConfigStore, type ClientConfig, type ClientTargets } from '../lib/config'
 import type { DateRange, ISODate, RangePreset, Scope, Suggestion } from '../lib/types'
 
@@ -143,7 +143,8 @@ export const useStore = create<MeridianState>((set, get) => ({
       const snapshot = await get().provider.loadSnapshot()
       const clientConfig = await configStore.load()
       captureBaseTargets(snapshot) // pristine seeded targets (once)
-      applyConfigInPlace(snapshot, clientConfig) // overlay per-client overrides
+      applyConfigInPlace(snapshot, clientConfig) // overlay per-client target overrides
+      setActiveClientThresholds(clientConfig) // expose per-client threshold overrides to the engine
       set({ snapshot, clientConfig, loading: false })
     } catch (e) {
       set({ error: (e as Error).message, loading: false })
@@ -268,6 +269,7 @@ export const useStore = create<MeridianState>((set, get) => ({
     void configStore.save(cfg)
     const { snapshot } = get()
     if (snapshot) applyConfigInPlace(snapshot, next)
+    setActiveClientThresholds(next)
     bumpSnapshot(set, () => ({ clientConfig: next }))
   },
 
@@ -277,6 +279,7 @@ export const useStore = create<MeridianState>((set, get) => ({
     void configStore.reset(clientId)
     const { snapshot } = get()
     if (snapshot) applyConfigInPlace(snapshot, next)
+    setActiveClientThresholds(next)
     bumpSnapshot(set, () => ({ clientConfig: next }))
   },
 }))
