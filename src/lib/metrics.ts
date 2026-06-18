@@ -127,6 +127,12 @@ export function startOfMonth(iso: ISODate): ISODate {
   return iso.slice(0, 8) + '01'
 }
 
+/** Breakeven ROAS = the ROAS that exactly covers cost, derived from contribution
+ *  margin (1 / margin). The honest bar to judge ROAS against, not a global 3x. */
+export function breakevenRoas(contributionMargin: number): number {
+  return contributionMargin > 0 ? 1 / contributionMargin : 0
+}
+
 /** Build a DateRange from a preset (anchored to DATA_TODAY). */
 export function makeRange(preset: RangePreset, custom?: { start: ISODate; end: ISODate }): DateRange {
   const end = today()

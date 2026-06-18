@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertTriangle, CheckCircle2, Cpu, KeyRound, Plug, RefreshCw, RotateCcw, Sliders, Workflow } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { Avatar, Chip, SectionHeader, Segmented } from '../components/ui/primitives'
@@ -9,6 +9,9 @@ import { API_VERSION, saveLiveConfig, type LiveConfig } from '../lib/provider/li
 import { WINDOW_DAYS } from '../lib/demo/generate'
 import { NARRATIVE_MODEL, PROXY_ENDPOINT, STRATEGY_MODEL, USE_LLM } from '../lib/ai/llm'
 import { EDITABLE_THRESHOLDS, THRESHOLDS } from '../lib/ai/thresholds'
+import { breakevenRoas } from '../lib/metrics'
+import { fmtRoas } from '../lib/format'
+import type { ClientConfig } from '../lib/config'
 import { cn } from '../lib/cn'
 
 export function SettingsScreen() {
@@ -40,6 +43,9 @@ export function SettingsScreen() {
           adAccountId: snapshot.accountByClient.get(c.id)?.id ?? '',
           businessId: snapshot.businessManagers.find((b) => b.id === c.bmId)?.metaBusinessId ?? '',
         })),
+        // snapshot.clients already carry per-client overrides from ConfigStore (the
+        // single editable home), so this is a DERIVED projection at save time — not a
+        // second target home. The live provider reads ConfigStore directly when wired.
         clients: snapshot.clients,
         windowDays: WINDOW_DAYS,
       }
@@ -168,6 +174,8 @@ export function SettingsScreen() {
         </div>
       </section>
 
+      <TargetsEditor />
+
       {/* AI analyst */}
       <section className="card p-6">
         <SectionHeader eyebrow="Intelligence" title="AI analyst" subtitle="Heuristics run with zero keys; an LLM enriches the narrative when a proxy is wired." />
@@ -233,6 +241,105 @@ function Field({ icon, label, value, tone }: { icon: React.ReactNode; label: str
         {label}
       </div>
       <div className={cn('mt-1.5 font-mono text-sm', tone ?? 'text-ink')}>{value}</div>
+    </div>
+  )
+}
+
+const clampMargin = (v: number) => Math.max(0.01, Math.min(0.99, v))
+
+/** Per-client targets editor — writes overrides through the store's ConfigStore
+ *  (applied onto the snapshot's Client objects, so the engine re-scores instantly). */
+function TargetsEditor() {
+  const snapshot = useSnapshot()!
+  const clientConfig = useStore((s) => s.clientConfig)
+  const setClientConfig = useStore((s) => s.setClientConfig)
+  const resetClientConfig = useStore((s) => s.resetClientConfig)
+
+  const update = (clientId: string, patch: Partial<ClientConfig>) => {
+    const existing = clientConfig[clientId] ?? { clientId, updatedAt: '' }
+    setClientConfig({ ...existing, ...patch, clientId, updatedAt: new Date().toISOString() })
+  }
+
+  return (
+    <section className="card overflow-hidden">
+      <div className="border-b border-line px-6 py-4">
+        <SectionHeader
+          eyebrow="Per client"
+          title="Targets & goals"
+          subtitle="Each client's north-star CPA / ROAS, budget, and unit economics. The engine scores against these — edits re-derive every screen and persist."
+        />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-line text-left text-2xs uppercase tracking-wide text-ink-subtle">
+              <th className="px-6 py-2.5 font-medium">Client</th>
+              <th className="px-3 py-2.5 font-medium">Target CPA</th>
+              <th className="px-3 py-2.5 font-medium">Target ROAS</th>
+              <th className="px-3 py-2.5 font-medium">Monthly budget</th>
+              <th className="px-3 py-2.5 font-medium">AOV</th>
+              <th className="px-3 py-2.5 font-medium">Margin</th>
+              <th className="px-3 py-2.5 font-medium">Breakeven ROAS</th>
+              <th className="px-3 py-2.5" />
+            </tr>
+          </thead>
+          <tbody>
+            {snapshot.clients.map((c) => (
+              <tr key={c.id} className="border-b border-line/60 last:border-0">
+                <td className="px-6 py-2">
+                  <div className="flex items-center gap-2.5">
+                    <Avatar monogram={c.monogram} color={c.accentColor} size={26} />
+                    <span className="font-medium text-ink">{c.name}</span>
+                  </div>
+                </td>
+                <td className="px-3 py-2"><NumCell value={c.targetCPA} step={1} prefix="$" onCommit={(v) => update(c.id, { targetCPA: v })} /></td>
+                <td className="px-3 py-2"><NumCell value={c.targetROAS} step={0.1} suffix="×" onCommit={(v) => update(c.id, { targetROAS: v })} /></td>
+                <td className="px-3 py-2"><NumCell value={c.monthlyBudget} step={100} prefix="$" onCommit={(v) => update(c.id, { monthlyBudget: v })} /></td>
+                <td className="px-3 py-2"><NumCell value={c.avgOrderValue} step={1} prefix="$" onCommit={(v) => update(c.id, { avgOrderValue: v })} /></td>
+                <td className="px-3 py-2"><NumCell value={Math.round(c.contributionMargin * 100)} step={1} suffix="%" onCommit={(v) => update(c.id, { contributionMargin: clampMargin(v / 100) })} /></td>
+                <td className="px-3 py-2.5 font-mono text-xs tabular-nums text-ink-muted">{fmtRoas(breakevenRoas(c.contributionMargin))}</td>
+                <td className="px-3 py-2.5 text-right">
+                  {clientConfig[c.id] && (
+                    <button
+                      onClick={() => resetClientConfig(c.id)}
+                      className="rounded-md px-2 py-1 text-2xs font-medium text-ink-subtle transition-colors hover:bg-surface-3 hover:text-ink"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="border-t border-line px-6 py-3 text-2xs leading-relaxed text-ink-subtle">
+        Breakeven ROAS = 1 / contribution margin — the bar the engine judges ROAS against. Overrides persist on this device and graduate to your backend when wired.
+      </p>
+    </section>
+  )
+}
+
+function NumCell({ value, step, prefix, suffix, onCommit }: { value: number; step: number; prefix?: string; suffix?: string; onCommit: (v: number) => void }) {
+  const [text, setText] = useState(String(value))
+  // re-sync when the effective value changes externally (e.g. Reset)
+  useEffect(() => setText(String(value)), [value])
+  return (
+    <div className="flex items-center gap-1">
+      {prefix && <span className="text-2xs text-ink-subtle">{prefix}</span>}
+      <input
+        type="number"
+        step={step}
+        min={0}
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value)
+          const v = Number(e.target.value)
+          if (Number.isFinite(v) && v > 0) onCommit(v)
+        }}
+        className="input w-20 px-2 py-1 text-xs tabular-nums"
+      />
+      {suffix && <span className="text-2xs text-ink-subtle">{suffix}</span>}
     </div>
   )
 }
