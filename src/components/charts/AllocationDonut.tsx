@@ -20,7 +20,12 @@ export function AllocationDonut({
   const total = slices.reduce((s, x) => s + x.value, 0)
   return (
     <div className="flex items-center gap-5">
-      <div className="relative shrink-0" style={{ width: size, height: size }}>
+      <div
+        className="relative shrink-0"
+        style={{ width: size, height: size }}
+        role="img"
+        aria-label={`Spend allocation by client — total ${fmtCurrency(total, { compact: true })} across ${slices.length} ${slices.length === 1 ? 'client' : 'clients'}`}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie

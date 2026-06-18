@@ -19,7 +19,6 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: unknown) {
-    // eslint-disable-next-line no-console
     console.error('[meridian] panel error boundary caught:', error, info)
   }
 

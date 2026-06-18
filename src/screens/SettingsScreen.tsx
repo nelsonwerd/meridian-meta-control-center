@@ -4,8 +4,9 @@ import { PageHeader } from '../components/blocks/PageHeader'
 import { Avatar, Chip, SectionHeader, Segmented } from '../components/ui/primitives'
 import { useSnapshot } from '../app/hooks'
 import { useStore } from '../app/store'
-import { createProvider, getProviderMode, setProviderMode, type ProviderMode } from '../lib/provider'
-import { API_VERSION } from '../lib/provider/liveProvider'
+import { createProvider, getProviderMode, type ProviderMode } from '../lib/provider'
+import { API_VERSION, saveLiveConfig, type LiveConfig } from '../lib/provider/liveProvider'
+import { WINDOW_DAYS } from '../lib/demo/generate'
 import { NARRATIVE_MODEL, PROXY_ENDPOINT, STRATEGY_MODEL, USE_LLM } from '../lib/ai/llm'
 import { EDITABLE_THRESHOLDS, THRESHOLDS } from '../lib/ai/thresholds'
 import { cn } from '../lib/cn'
@@ -14,6 +15,7 @@ export function SettingsScreen() {
   const snapshot = useSnapshot()!
   const setThreshold = useStore((s) => s.setThreshold)
   const resetThresholds = useStore((s) => s.resetThresholds)
+  const applyProviderMode = useStore((s) => s.applyProviderMode)
   const [mode, setMode] = useState<ProviderMode>(getProviderMode())
   const [token, setToken] = useState('')
   const [testing, setTesting] = useState(false)
@@ -28,8 +30,22 @@ export function SettingsScreen() {
   }
 
   const apply = () => {
-    setProviderMode(mode)
-    location.reload()
+    if (mode === 'live') {
+      // Persist the non-secret account MAPPING template (client → ad account → BM)
+      // so live mode has a config to attempt. The Graph token is NOT stored from the
+      // browser (docs/META_INTEGRATION.md) — supply it server-side via the proxy.
+      const cfg: LiveConfig = {
+        accounts: snapshot.clients.map((c) => ({
+          clientId: c.id,
+          adAccountId: snapshot.accountByClient.get(c.id)?.id ?? '',
+          businessId: snapshot.businessManagers.find((b) => b.id === c.bmId)?.metaBusinessId ?? '',
+        })),
+        clients: snapshot.clients,
+        windowDays: WINDOW_DAYS,
+      }
+      saveLiveConfig(cfg)
+    }
+    void applyProviderMode(mode)
   }
 
   const dirty = mode !== getProviderMode()
@@ -217,15 +233,6 @@ function Field({ icon, label, value, tone }: { icon: React.ReactNode; label: str
         {label}
       </div>
       <div className={cn('mt-1.5 font-mono text-sm', tone ?? 'text-ink')}>{value}</div>
-    </div>
-  )
-}
-
-function Rule({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-line bg-surface-2 p-3">
-      <div className="flex items-center gap-2">{icon}<span className="text-2xs text-ink-muted">{label}</span></div>
-      <div className="mt-1.5 text-sm font-semibold tabular-nums text-ink">{value}</div>
     </div>
   )
 }

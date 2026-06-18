@@ -100,6 +100,14 @@ export function Chip({
    volume metrics and negligible moves). Magnitude is shown unsigned — the arrow
    already carries direction, so "↘ 3%" reads as "down 3%" without a sign clash. */
 export function Delta({ d, className, invertColor }: { d: KpiDelta; className?: string; invertColor?: boolean }) {
+  // No prior-period baseline — show a neutral "new" tag, not a fabricated +100%.
+  if (d.isNew) {
+    return (
+      <span className={cn('inline-flex items-center gap-0.5 text-xs font-semibold text-info', className)}>
+        new
+      </span>
+    )
+  }
   let good = deltaIsGood(d)
   if (invertColor && good !== null) good = !good
   const negligible = Math.abs(d.deltaPct) < 0.005
@@ -241,10 +249,15 @@ export function Segmented<T extends string>({
 
 /* ---------------- Tooltip (lightweight) ---------------- */
 export function Tooltip({ label, children }: { label: ReactNode; children: ReactNode }) {
+  // tabIndex + focus-within so the tip is reachable by keyboard and on touch
+  // (tap focuses), not hover-only.
   return (
-    <span className="group/tt relative inline-flex">
+    <span className="group/tt relative inline-flex focus-ring rounded" tabIndex={0}>
       {children}
-      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-surface-3 px-2 py-1 text-2xs text-ink opacity-0 shadow-pop transition-opacity duration-150 group-hover/tt:opacity-100">
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md border border-line bg-surface-3 px-2 py-1 text-2xs text-ink opacity-0 shadow-pop transition-opacity duration-150 group-hover/tt:opacity-100 group-focus-within/tt:opacity-100"
+      >
         {label}
       </span>
     </span>

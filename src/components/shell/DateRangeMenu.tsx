@@ -71,7 +71,7 @@ export function DateRangeMenu() {
                 min={earliestDate()}
                 max={today()}
                 onChange={(e) => setCustomStart(e.target.value)}
-                className="input px-2 py-1 text-xs [color-scheme:dark]"
+                className="input px-2 py-1 text-xs"
               />
               <span className="text-ink-subtle">–</span>
               <input
@@ -80,7 +80,7 @@ export function DateRangeMenu() {
                 min={earliestDate()}
                 max={today()}
                 onChange={(e) => setCustomEnd(e.target.value)}
-                className="input px-2 py-1 text-xs [color-scheme:dark]"
+                className="input px-2 py-1 text-xs"
               />
             </div>
             <button onClick={applyCustom} className="btn-primary mt-2 w-full py-1.5 text-xs">

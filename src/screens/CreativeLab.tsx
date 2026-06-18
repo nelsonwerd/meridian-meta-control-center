@@ -3,13 +3,12 @@ import { Beaker, FlaskConical, Lightbulb, Trophy, XCircle } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { CreativeThumb } from '../components/blocks/CreativeThumb'
 import { HBars, type HBarItem } from '../components/charts/HBars'
-import { Avatar, Chip, EmptyState, Segmented, SectionHeader } from '../components/ui/primitives'
+import { Avatar, EmptyState, Segmented, SectionHeader } from '../components/ui/primitives'
 import { useSnapshot } from '../app/hooks'
 import { useStore } from '../app/store'
 import { clientsForScope } from '../lib/selectors'
 import { creativeCohorts, creativePerformance, nextBatchPlan } from '../lib/ai/creative'
 import { fmtCurrency, fmtNumber, fmtPercent } from '../lib/format'
-import { DIAGNOSIS_META } from '../lib/labels'
 import { cn } from '../lib/cn'
 import type { CreativePerformance } from '../lib/types'
 
@@ -80,8 +79,8 @@ export function CreativeLab() {
         subtitle="Performance against the data — by format, angle, and funnel stage — with the next test batch to brief."
         actions={
           scopeClients.length > 1 && (
-            <div className="flex items-center gap-1.5">
-              {scopeClients.slice(0, 6).map((c) => (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {scopeClients.map((c) => (
                 <button
                   key={c.id}
                   onClick={() => setClientId(c.id)}

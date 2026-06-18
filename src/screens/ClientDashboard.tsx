@@ -7,11 +7,10 @@ import { PerformanceTrendCard } from '../components/blocks/PerformanceTrendCard'
 import { SuggestionCard } from '../components/blocks/SuggestionCard'
 import { CreativeThumb } from '../components/blocks/CreativeThumb'
 import { Avatar, Chip, EmptyState, ProgressRing, SectionHeader, StatusBadge } from '../components/ui/primitives'
-import { Sparkline } from '../components/charts/Sparkline'
 import { useSnapshot } from '../app/hooks'
 import { useStore } from '../app/store'
 import { adIdsForScope, insightsForAdIds, metricsForEntity, metricsForScope } from '../lib/selectors'
-import { previousRange, timeseries, today } from '../lib/metrics'
+import { previousRange, timeseries } from '../lib/metrics'
 import { analyzeClient } from '../lib/ai/engine'
 import { creativePerformance } from '../lib/ai/creative'
 import { buildWeeklyReport } from '../lib/ai/report'
@@ -179,7 +178,7 @@ export function ClientDashboard({ client }: { client: Client }) {
           <div className="border-b border-line px-5 py-3.5">
             <SectionHeader title="Recommended actions" />
           </div>
-          <div className="flex-1 space-y-3 overflow-y-auto p-4" style={{ maxHeight: 560 }}>
+          <div className="flex-1 space-y-3 overflow-y-auto p-4 max-h-[60vh]">
             {data.suggestions.length ? (
               data.suggestions.slice(0, 5).map((s) => <SuggestionCard key={s.id} s={s} showClient={false} />)
             ) : (

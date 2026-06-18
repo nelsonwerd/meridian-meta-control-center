@@ -5,6 +5,9 @@ import type { Snapshot } from '../lib/provider'
  *  actions bump `version`). */
 export function useSnapshot(): Snapshot | null {
   const snapshot = useStore((s) => s.snapshot)
+  // Intentional belt-and-suspenders: bumpSnapshot also swaps the snapshot ref, so
+  // the line above already re-renders. This explicit `version` subscription guards
+  // any future mutation path that bumps version WITHOUT cloning. Keep it.
   useStore((s) => s.version)
   return snapshot
 }

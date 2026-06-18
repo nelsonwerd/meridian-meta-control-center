@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { ArrowLeft, CalendarDays, Download, TrendingDown, TrendingUp } from 'lucide-react'
+import { ArrowLeft, CalendarDays, Download, Minus, TrendingDown, TrendingUp } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { SuggestionCard } from '../components/blocks/SuggestionCard'
 import { CreativeThumb } from '../components/blocks/CreativeThumb'
@@ -50,7 +50,11 @@ function Digest({ clients, week, onOpen }: { clients: Client[]; week: { start: s
       />
       <div className="grid gap-4 md:grid-cols-2">
         {reports.map(({ c, r }) => {
-          const up = r.kpis.purchases.delta >= 0 && r.kpis.cpa.delta <= 0
+          // Icon follows the report's computed sentiment, so it can never disagree
+          // with the headline (e.g. an "up" arrow over a "soft week" headline).
+          const dirStyle =
+            r.direction === 'positive' ? 'bg-success/10 text-success' : r.direction === 'caution' ? 'bg-warning/10 text-warning' : 'bg-surface-3 text-ink-muted'
+          const DirIcon = r.direction === 'positive' ? TrendingUp : r.direction === 'caution' ? TrendingDown : Minus
           return (
             <button
               key={c.id}
@@ -63,8 +67,8 @@ function Digest({ clients, week, onOpen }: { clients: Client[]; week: { start: s
                   <div className="truncate font-semibold text-ink">{c.name}</div>
                   <div className="text-2xs text-ink-subtle">{c.vertical}</div>
                 </div>
-                <span className={cn('grid h-8 w-8 place-items-center rounded-lg', up ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning')}>
-                  {up ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
+                <span className={cn('grid h-8 w-8 place-items-center rounded-lg', dirStyle)}>
+                  <DirIcon className="h-4 w-4" />
                 </span>
               </div>
               <p className="mt-3 text-sm font-medium text-ink">{r.headline}</p>

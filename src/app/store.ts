@@ -49,6 +49,9 @@ interface MeridianState {
   dismissedSuggestionIds: Set<string>
 
   init: () => Promise<void>
+  /** Swap demo/live provider in place + reload the snapshot — no full-page reload,
+   *  so scope / range / theme survive. */
+  applyProviderMode: (mode: ProviderMode) => Promise<void>
   setScope: (s: Scope) => void
   setRangePreset: (p: RangePreset, custom?: { start: ISODate; end: ISODate }) => void
   setRange: (r: DateRange) => void
@@ -98,6 +101,20 @@ export const useStore = create<MeridianState>((set, get) => ({
     }
   },
 
+  async applyProviderMode(mode) {
+    persistMode(mode)
+    // Reset the per-session action log/sets (they key off the old dataset) and swap
+    // the provider, then re-init to load the new snapshot in place.
+    set({
+      providerMode: mode,
+      provider: createProvider(mode),
+      applied: [],
+      appliedSuggestionIds: new Set(),
+      dismissedSuggestionIds: new Set(),
+    })
+    await get().init()
+  },
+
   setScope(scope) {
     set({ scope })
   },
@@ -142,7 +159,11 @@ export const useStore = create<MeridianState>((set, get) => ({
             ...st.applied,
           ].slice(0, 50),
         }))
-        const undo = restore
+        // Undo only in demo: the demo restore mutates the in-memory snapshot, which
+        // genuinely reverses a simulated change. In live mode the write is already
+        // committed at Meta, so a client-side restore would desync UI from reality —
+        // offer no Undo rather than a misleading one (a real undo = a compensating POST).
+        const undo = restore && get().providerMode === 'demo'
           ? {
               label: 'Undo',
               onClick: () => {
@@ -171,8 +192,10 @@ export const useStore = create<MeridianState>((set, get) => ({
 
   pushToast(kind, message, action) {
     const id = genId()
+    // Auto-dismiss is owned by the Toasts component (a per-toast timer that pauses
+    // on hover/focus and is cancelled on unmount) — not a fire-and-forget setTimeout
+    // here, which could never be paused and would fire on an already-removed id.
     set((st) => ({ toasts: [...st.toasts, { id, kind, message, action }] }))
-    setTimeout(() => get().removeToast(id), action ? 7000 : 4200)
   },
 
   removeToast(id) {
@@ -195,7 +218,14 @@ export const useStore = create<MeridianState>((set, get) => ({
 type SetState = (partial: (st: MeridianState) => Partial<MeridianState>) => void
 
 /** Bump version + clone the snapshot reference (so [snapshot]-keyed memos
- *  re-derive), merging any extra state fields. */
+ *  re-derive), merging any extra state fields.
+ *
+ *  The clone is INTENTIONALLY shallow: the entity objects and the index Maps inside
+ *  the snapshot stay shared by reference, which is what lets the provider's in-place
+ *  optimistic write (and the Undo restore) be visible without a deep rebuild. Do NOT
+ *  "fix" this into a deep clone. If a future feature needs an immutable before/after,
+ *  capture primitive field values in a closure (as captureRestore does) rather than
+ *  relying on object identity. */
 function bumpSnapshot(set: SetState, updater: (st: MeridianState) => Partial<MeridianState>) {
   set((st) => ({
     version: st.version + 1,

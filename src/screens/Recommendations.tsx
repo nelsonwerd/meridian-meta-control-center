@@ -196,21 +196,26 @@ function SummaryTile({
   active?: boolean
   onClick?: () => void
 }) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={!onClick}
-      className={cn(
-        'card flex items-center gap-3 p-4 text-left transition-all',
-        onClick && 'hover:border-line-strong',
-        active && 'ring-2 ring-brand/50',
-      )}
-    >
+  const className = cn(
+    'card flex items-center gap-3 p-4 text-left transition-all',
+    onClick && 'hover:border-line-strong',
+    active && 'ring-2 ring-brand/50',
+  )
+  const inner = (
+    <>
       <span className={cn('h-2.5 w-2.5 rounded-full', dot)} />
       <div>
         <div className={cn('text-2xl font-semibold tabular-nums', tone)}>{value}</div>
         <div className="text-2xs text-ink-muted">{label}</div>
       </div>
+    </>
+  )
+  // A non-filterable tile (e.g. "Applied this session") is a stat, not a control —
+  // render a div so it isn't announced as a disabled button.
+  if (!onClick) return <div className={className}>{inner}</div>
+  return (
+    <button onClick={onClick} className={className} aria-pressed={active}>
+      {inner}
     </button>
   )
 }

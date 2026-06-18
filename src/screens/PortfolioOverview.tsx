@@ -6,7 +6,7 @@ import { KpiRow } from '../components/blocks/KpiRow'
 import { PerformanceTrendCard } from '../components/blocks/PerformanceTrendCard'
 import { SuggestionCard } from '../components/blocks/SuggestionCard'
 import { AllocationDonut } from '../components/charts/AllocationDonut'
-import { Avatar, EmptyState, SectionHeader, StatusBadge } from '../components/ui/primitives'
+import { Avatar, EmptyState, SectionHeader } from '../components/ui/primitives'
 import { Sparkline } from '../components/charts/Sparkline'
 import { useSnapshot } from '../app/hooks'
 import { useStore } from '../app/store'
@@ -16,7 +16,7 @@ import {
   insightsForAdIds,
   metricsForScope,
 } from '../lib/selectors'
-import { previousRange, timeseries } from '../lib/metrics'
+import { aggregate, filterByRange, previousRange, timeseries } from '../lib/metrics'
 import { analyzeScope } from '../lib/ai/engine'
 import { fmtCurrency, fmtNumber, fmtPercent, fmtRoas } from '../lib/format'
 import { seriesColor } from '../lib/palette'
@@ -41,9 +41,12 @@ export function PortfolioOverview({ scope }: { scope: Scope }) {
     const clientRows = clients
       .map((c) => {
         const cs: Scope = { kind: 'client', clientId: c.id }
-        const m = metricsForScope(snapshot, cs, range)
-        const mp = metricsForScope(snapshot, cs, prev)
-        const cts = timeseries(insightsForAdIds(snapshot, adIdsForScope(snapshot, cs)), range)
+        // Gather this client's insight rows ONCE, then derive current/previous/spark
+        // from that single set (was 3 separate adIds→insights resolutions per client).
+        const rows = insightsForAdIds(snapshot, adIdsForScope(snapshot, cs))
+        const m = aggregate(filterByRange(rows, range))
+        const mp = aggregate(filterByRange(rows, prev))
+        const cts = timeseries(rows, range)
         return { client: c, m, mp, spark: cts.map((p) => p.spend) }
       })
       .sort((a, b) => b.m.spend - a.m.spend)
@@ -131,13 +134,22 @@ export function PortfolioOverview({ scope }: { scope: Scope }) {
                       className="cursor-pointer border-b border-line/60 transition-colors last:border-0 hover:bg-surface-2"
                     >
                       <td className="px-5 py-3">
-                        <div className="flex items-center gap-2.5">
+                        {/* Real, keyboard-focusable control with an accessible name; the
+                            row onClick stays as a mouse convenience. */}
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setScope({ kind: 'client', clientId: client.id })
+                          }}
+                          aria-label={`Open ${client.name} dashboard`}
+                          className="-m-1 flex items-center gap-2.5 rounded-md p-1 text-left focus-ring"
+                        >
                           <Avatar monogram={client.monogram} color={client.accentColor} size={30} />
                           <div className="min-w-0">
                             <div className="truncate font-medium text-ink">{client.name}</div>
                             <div className="truncate text-2xs text-ink-subtle">{client.vertical}</div>
                           </div>
-                        </div>
+                        </button>
                       </td>
                       <td className="px-3 py-3 text-right font-medium tabular-nums text-ink">{fmtCurrency(m.spend, { compact: true })}</td>
                       <td className="px-3 py-3 text-right tabular-nums text-ink-muted">{fmtNumber(m.purchases)}</td>
@@ -167,7 +179,7 @@ export function PortfolioOverview({ scope }: { scope: Scope }) {
               All
             </Link>
           </div>
-          <div className="flex-1 space-y-3 overflow-y-auto p-4" style={{ maxHeight: 640 }}>
+          <div className="flex-1 space-y-3 overflow-y-auto p-4 max-h-[60vh]">
             {data.suggestions.length ? (
               data.suggestions.slice(0, 5).map((s) => <SuggestionCard key={s.id} s={s} />)
             ) : (

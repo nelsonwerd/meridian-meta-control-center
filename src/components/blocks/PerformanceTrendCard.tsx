@@ -53,7 +53,7 @@ export function PerformanceTrendCard({
           />
         }
       />
-      <div className="mt-4">
+      <div className="mt-4" role="img" aria-label={`${title}: ${VIEWS[view].map((s) => s.label).join(' and ')} over ${series.length} days`}>
         <TrendChart data={series} series={VIEWS[view]} height={height} showRightAxis />
       </div>
     </div>
