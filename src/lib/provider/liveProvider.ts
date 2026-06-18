@@ -59,7 +59,9 @@ export interface LiveAccountConfig {
   clientId: string
   adAccountId: string // act_<id>
   businessId: string
-  accessToken: string
+  /** Optional: in production the token lives server-side (the proxy injects it),
+   *  so a persisted mapping carries NO token. Falls back to defaultAccessToken. */
+  accessToken?: string
 }
 
 export interface LiveConfig {
@@ -88,7 +90,7 @@ export function saveLiveConfig(cfg: LiveConfig) {
 
 class NotConfiguredError extends Error {
   constructor() {
-    super('Live mode is not configured. Add a Meta system-user token and map ad accounts in Settings → Connection.')
+    super('Live mode is not configured. Map ad accounts in Settings and supply a Meta system-user token (server-side).')
     this.name = 'NotConfiguredError'
   }
 }
@@ -103,16 +105,58 @@ interface GraphPage<T> {
 // array — a silent truncation would understate summed KPIs (spend/orders/revenue).
 const MAX_PAGES = 1000
 
+/** Meta's X-Business-Use-Case-Usage rate-limit telemetry (the fields we act on). */
+interface BucUsage {
+  callCount: number
+  totalCpuTime: number
+  estimatedTimeToRegainAccess: number
+}
+
+function parseBuc(res: Response): BucUsage | null {
+  const raw = res.headers.get('x-business-use-case-usage')
+  if (!raw) return null
+  try {
+    const first = Object.values(JSON.parse(raw) as Record<string, Array<Record<string, number>>>)[0]?.[0]
+    if (!first) return null
+    return {
+      callCount: first.call_count ?? 0,
+      totalCpuTime: first.total_cputime ?? 0,
+      estimatedTimeToRegainAccess: first.estimated_time_to_regain_access ?? 0,
+    }
+  } catch {
+    return null
+  }
+}
+
+function buildUrl(path: string, params: Record<string, string>, token: string, extra: Record<string, string> = {}): string {
+  const url = new URL(`${GRAPH_BASE}/${API_VERSION}/${path}`)
+  Object.entries({ ...params, access_token: token, ...extra }).forEach(([k, v]) => url.searchParams.set(k, v))
+  return url.toString()
+}
+
+// Single fetch with minimal throttle backoff. GROUNDWORK ONLY — real rate-limit
+// handling and async insight report jobs for large pulls belong in the backend
+// proxy that holds the token (docs/META_INTEGRATION.md §3). Backs off on a 429 or
+// when BUC usage crosses ~95%, up to 3 attempts.
+async function graphFetch(url: string, attempt = 0): Promise<Response> {
+  const res = await fetch(url)
+  const buc = parseBuc(res)
+  const throttled = res.status === 429 || (buc != null && (buc.callCount >= 95 || buc.totalCpuTime >= 95))
+  if (throttled && attempt < 3) {
+    const waitMs = buc?.estimatedTimeToRegainAccess ? buc.estimatedTimeToRegainAccess * 1000 : Math.min(2 ** attempt * 1000, 8000)
+    await new Promise((r) => setTimeout(r, waitMs))
+    return graphFetch(url, attempt + 1)
+  }
+  return res
+}
+
+/** Paginated EDGE read (returns the full data[] across pages). */
 async function graphGet<T>(path: string, params: Record<string, string>, token: string): Promise<T[]> {
   const out: T[] = []
   let after: string | undefined
   let pages = 0
   do {
-    const url = new URL(`${GRAPH_BASE}/${API_VERSION}/${path}`)
-    Object.entries({ ...params, access_token: token, limit: '200', ...(after ? { after } : {}) }).forEach(([k, v]) =>
-      url.searchParams.set(k, v),
-    )
-    const res = await fetch(url.toString())
+    const res = await graphFetch(buildUrl(path, params, token, { limit: '200', ...(after ? { after } : {}) }))
     if (!res.ok) {
       const body = await res.text()
       throw new Error(`Graph ${res.status}: ${body.slice(0, 300)}`)
@@ -129,6 +173,21 @@ async function graphGet<T>(path: string, params: Record<string, string>, token: 
   return out
 }
 
+/** Single NODE read (an object, not an edge — no pagination). Throws if the node
+ *  is missing/errored so callers can't read a false success from an empty edge. */
+async function graphGetNode<T>(path: string, params: Record<string, string>, token: string): Promise<T> {
+  const res = await graphFetch(buildUrl(path, params, token))
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`Graph ${res.status}: ${body.slice(0, 300)}`)
+  }
+  const node = (await res.json()) as T & { error?: unknown }
+  if (!node || typeof node !== 'object' || node.error) {
+    throw new Error(`Graph node ${path} returned no object.`)
+  }
+  return node
+}
+
 /** Pull the additive action/value out of Meta's nested actions array. */
 function actionVal(arr: { action_type: string; value: string }[] | undefined, type: string): number {
   return Number(arr?.find((a) => a.action_type === type)?.value ?? 0)
@@ -143,8 +202,15 @@ export class LiveProvider implements DataProvider {
     const first = this.cfg.accounts[0]
     const token = first.accessToken || this.cfg.defaultAccessToken || ''
     try {
-      await graphGet(`${first.adAccountId}`, { fields: 'name,currency,account_status' }, token)
-      return { ok: true, detail: `Connected. ${this.cfg.accounts.length} ad account(s) mapped.` }
+      // A node GET (not the edge-shaped graphGet, which would parse data[] off a
+      // node response and report a false success). Assert we actually got the account.
+      const node = await graphGetNode<{ name?: string; account_status?: number }>(
+        first.adAccountId,
+        { fields: 'name,currency,account_status' },
+        token,
+      )
+      if (!node.name) throw new Error('account node returned no name — the token may lack access to this ad account')
+      return { ok: true, detail: `Connected to ${node.name}. ${this.cfg.accounts.length} ad account(s) mapped.` }
     } catch (e) {
       return { ok: false, detail: `Connection failed: ${(e as Error).message}` }
     }
@@ -160,23 +226,29 @@ export class LiveProvider implements DataProvider {
     const creatives: Creative[] = []
     const insights: Insight[] = []
 
-    const since = isoDaysAgo(cfg.windowDays)
-    const until = isoDaysAgo(0)
-
     for (const acct of cfg.accounts) {
       const token = acct.accessToken || cfg.defaultAccessToken || ''
-      const acctNode = (await graphGet<{ name: string; currency: string; timezone_name: string }>(
+      // Node read (not the edge-shaped graphGet) so we actually get the account
+      // object, and can source the real currency_offset + the account timezone.
+      const acctNode = await graphGetNode<{ name?: string; currency?: string; timezone_name?: string; currency_offset?: number }>(
         acct.adAccountId,
-        { fields: 'name,currency,timezone_name' },
+        { fields: 'name,currency,timezone_name,currency_offset' },
         token,
-      ))[0] as any
+      )
+      const timezone = acctNode.timezone_name ?? 'America/New_York'
       accounts.push({
         id: acct.adAccountId,
         clientId: acct.clientId,
-        name: acctNode?.name ?? acct.adAccountId,
-        currency: acctNode?.currency ?? 'USD',
-        timezone: acctNode?.timezone_name ?? 'America/New_York',
+        name: acctNode.name ?? acct.adAccountId,
+        currency: acctNode.currency ?? 'USD',
+        timezone,
+        currency_offset: acctNode.currency_offset,
       })
+
+      // Insights window in the ACCOUNT's timezone — Meta reports daily rows on the
+      // account tz, so a UTC window would shift totals vs Ads Manager.
+      const since = isoDaysAgoInTz(timezone, cfg.windowDays)
+      const until = isoDaysAgoInTz(timezone, 0)
 
       // structure
       const rawCampaigns = await graphGet<any>(`${acct.adAccountId}/campaigns`, { fields: 'name,objective,status,daily_budget,bid_strategy' }, token)
@@ -209,17 +281,31 @@ export class LiveProvider implements DataProvider {
       void rawCampaigns // mapping omitted in scaffold — structure pull follows the same pattern
     }
 
+    // These four arrays are the RESERVED accumulators for the deferred structure→
+    // type mapping (#02): once that last-mile lands they hold the mapped
+    // campaigns/adsets/ads/creatives and feed the shared index builder. Referenced
+    // via void so the scaffold stays strict-clean (noUnusedLocals) without deleting
+    // the reserved home or faking usage. (See docs/PROMPT_PACK_live_integration.md.)
+    void campaigns
+    void adSets
+    void ads
+    void creatives
+
     // Indexes are rebuilt by buildIndexes() — shared with demo. (Scaffold: when
     // structure mapping above is completed, call the same index builder.)
     throw new Error(
       'LiveProvider.loadSnapshot is a wired scaffold: insights pull + action POSTs are implemented; the structure→type mapping (campaigns/adsets/ads/creatives) is the remaining last-mile. See docs/META_INTEGRATION.md.',
     )
-    // eslint-disable-next-line no-unreachable
     return {} as Snapshot
   }
 
   async applyAction(req: ActionRequest, snapshot: Snapshot): Promise<ActionResult> {
     if (!this.cfg) throw new NotConfiguredError()
+    // duplicate / consolidate / brief_creative aren't single Graph writes, and
+    // none = a no-op "watch". Don't POST a mutation-less body and report success.
+    if (req.kind === 'duplicate' || req.kind === 'consolidate' || req.kind === 'brief_creative' || req.kind === 'none') {
+      return { ok: false, message: `"${req.kind}" is a multi-step action — not supported as a single live write yet; handle it in the app/workflow.` }
+    }
     // Resolve the entity's OWNING account so we use the right token + currency.
     // A multi-BM agency holds a token per client-owned BM — using accounts[0]
     // blindly would POST with the wrong token and fail (or hit the wrong account).
@@ -230,13 +316,25 @@ export class LiveProvider implements DataProvider {
     if (req.kind === 'pause') body.set('status', 'PAUSED')
     if (req.kind === 'activate') body.set('status', 'ACTIVE')
     if ((req.kind === 'increase_budget' || req.kind === 'decrease_budget') && req.proposedBudget != null) {
-      // Budgets POST in MINOR units; the multiplier is the account's currency
-      // offset (100 for USD/EUR, 1 for zero-decimal JPY/KRW, 1000 for KWD/BHD).
-      const currency = snapshot.accountByClient.get(acct.clientId)?.currency ?? 'USD'
-      body.set('daily_budget', String(Math.round(req.proposedBudget * currencyOffset(currency))))
+      // Budgets POST in MINOR units. Prefer the account's REAL currency_offset
+      // (sourced from the Graph API); fall back to the static map only if absent.
+      const account = snapshot.accountByClient.get(acct.clientId)
+      const offset = account?.currency_offset ?? currencyOffset(account?.currency ?? 'USD')
+      body.set('daily_budget', String(Math.round(req.proposedBudget * offset)))
     }
     const res = await fetch(`${GRAPH_BASE}/${API_VERSION}/${req.entityId}`, { method: 'POST', body })
-    if (!res.ok) return { ok: false, message: `Graph ${res.status}: ${(await res.text()).slice(0, 200)}` }
+    const text = await res.text()
+    if (!res.ok) return { ok: false, message: `Graph ${res.status}: ${text.slice(0, 200)}` }
+    // 2xx is necessary but not sufficient — Graph can return { success:false } or an
+    // error object inside a 200. Require it to not be an explicit failure.
+    try {
+      const payload = text ? JSON.parse(text) : {}
+      if (payload && (payload.success === false || payload.error)) {
+        return { ok: false, message: `Meta did not apply the change: ${JSON.stringify(payload).slice(0, 160)}` }
+      }
+    } catch {
+      /* non-JSON 2xx body — treat as applied */
+    }
     return { ok: true, message: 'Applied via Meta Marketing API.' }
   }
 
@@ -254,9 +352,11 @@ export class LiveProvider implements DataProvider {
 }
 
 // Meta currency_offset by ISO code. Most are 100 (two-decimal); zero-decimal and
-// three-decimal currencies differ. Source from the account in production; this map
-// is the documented fallback.
-const ZERO_DECIMAL = new Set(['JPY', 'KRW', 'VND', 'CLP', 'ISK', 'HUF', 'TWD', 'UGX'])
+// three-decimal currencies differ. Always prefer the per-account value from the
+// Graph API (set on AdAccount.currency_offset); this static map is only the
+// fallback. NB: HUF and TWD are TWO-decimal in Meta's currency_offset — they are
+// deliberately NOT in this zero-decimal set (a mis-bucket would POST 100x too small).
+const ZERO_DECIMAL = new Set(['JPY', 'KRW', 'VND', 'CLP', 'ISK', 'UGX'])
 const THREE_DECIMAL = new Set(['KWD', 'BHD', 'JOD', 'OMR', 'TND'])
 export function currencyOffset(currency: string): number {
   const c = currency.toUpperCase()
@@ -265,8 +365,19 @@ export function currencyOffset(currency: string): number {
   return 100
 }
 
-function isoDaysAgo(n: number): string {
-  const d = new Date()
+/** Today's date (YYYY-MM-DD) in a given IANA timezone; falls back to UTC. */
+function isoTodayInTz(tz: string): string {
+  try {
+    // en-CA renders as YYYY-MM-DD
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date())
+  } catch {
+    return new Date().toISOString().slice(0, 10)
+  }
+}
+
+/** N days before "today in tz", as YYYY-MM-DD (UTC-safe arithmetic on the date). */
+function isoDaysAgoInTz(tz: string, n: number): string {
+  const d = new Date(isoTodayInTz(tz) + 'T00:00:00Z')
   d.setUTCDate(d.getUTCDate() - n)
   return d.toISOString().slice(0, 10)
 }
