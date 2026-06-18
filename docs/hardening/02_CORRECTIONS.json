@@ -1,0 +1,116 @@
+[
+  {
+    "ref": "P1",
+    "problem": "P1's noUnused* flip hazard note only accounts for #36's 4 dead-code items (StatusBadge, today, DIAGNOSIS_META, Rule). I flipped both flags to true and ran tsc: it surfaces 12 TS6133 errors, not 4. The 8 un-enumerated ones include items entangled with other phases: store.ts:5 `persistMode` (the aliased setProviderMode import) is referenced NOWHERE today \u2014 it is consumed only by P4's #27 fix ('use the imported persistMode'); and liveProvider.ts:157-160 `campaigns/adSets/ads/creatives` are the scaffold accumulators for the DEFERRED #02 structure mapping (they sit above the `void rawCampaigns` / throw at lines 209/214). Flipping noUnused* in P1 breaks the build on all 12 until their owning phases land \u2014 and the 4 liveProvider locals can neither be deleted (they're the reserved home for deferred #02) nor left (they error).",
+    "recommendation": "Either (a) MOVE the noUnused* flip out of P1 to the very LAST phase (after P4 consumes persistMode and after P5/#02 either lands or the scaffold locals are annotated), or (b) keep the flip in P1 but expand its dead-code-removal step to the full 12-item list AND handle the entangled four explicitly: delete the genuinely-dead imports (report.ts:3 fmtShort, CreativeLab.tsx:6 Chip, ClientDashboard.tsx:10 Sparkline, plus #36's four), but for store.ts persistMode and the 4 liveProvider scaffold locals, suppress per-line (`// @ts-expect-error` or a scaffold eslint-disable equivalent) or guard them so the build stays green until P4/P5. Do NOT delete the liveProvider accumulators \u2014 that would erase the deferred mapping's reserved home. Run `tsc --noEmit` with the flags on as the phase's acceptance check.",
+    "severity": "must-fix"
+  },
+  {
+    "ref": "P0/P5,P0/P2",
+    "problem": "P0's success metric mandates tests for 'currency offset' and 'engine gating rules' that assert the NEW/correct behavior, but those behaviors are not fixed until later phases. currencyOffset() (liveProvider.ts:259-266) currently returns 1 for HUF/TWD; the correct value the #07 test must assert is 100 \u2014 but that fix is in P5. Likewise the DOA gating fix (#22, drop `m7.purchases <= 1` at engine.ts:71) is in P2. A P0 test encoding the corrected expectation fails at P0; a P0 test encoding CURRENT (buggy) behavior would have to be inverted in P5/P2.",
+    "recommendation": "Sequence the assertion to its fix: write the currencyOffset HUF/TWD=100 assertion as PART OF P5 (#03/#07), not P0 \u2014 P0 should test only the already-correct offsets (USD=100, JPY/KRW=1, KWD=1000) so it is green on landing. Same pattern for engine gating: P0 covers the stable invariants (suggestion mix, scale/fatigue threshold gating that isn't changing), and the DOA-clause behavior assertion ships WITH #22 in P2. State the rule explicitly in the prompt-pack: each behavior-changing finding ships its own test in its own phase; P0 only locks down behavior that is NOT being changed.",
+    "severity": "must-fix"
+  },
+  {
+    "ref": "#18",
+    "problem": "The fix ('add isNew to KpiDelta, render \"new\" instead of 100%') is incomplete. The fabricated value surfaces in THREE independent paths, only one of which is gated by a KpiDelta flag a consumer chooses to read: (a) the Delta primitive at primitives.tsx:107 derives its arrow from d.delta>0 and renders Math.round(Math.abs(d.deltaPct)*100) at :111; (b) report.ts:130 prints fmtDeltaPct(orders.deltaPct) in prose; (c) report.ts:112 derives ordersDir from orders.delta (not deltaPct). An isNew flag on KpiDelta does nothing until Delta and the report narrative are each updated to branch on it.",
+    "recommendation": "Scope #18 to: add isNew:boolean to KpiDelta (metrics.ts:88, set when prev===0 && current!==0); update the Delta primitive (primitives.tsx:102-113) to render a 'new' badge when d.isNew; and update composeNarrative/summary in report.ts to special-case isNew for the orders/roas lines. Cover all three sites in the same phase, or the user-visible +100% persists.",
+    "severity": "must-fix"
+  },
+  {
+    "ref": "#23",
+    "problem": "The suggestedFix says 'keep the suggestion with the higher impactScore/confidence', but impactScore for SCALE_BUDGET is extraDaily = proposed \u2212 holder.currentBudget (engine.ts:162-163,172), which is computed purely from the shared budget-holder and is therefore IDENTICAL for every colliding sibling under one CBO campaign / ABO ad set. Reducing on impactScore is a no-op tiebreak and would silently keep first-seen again. The genuinely divergent field is confidence (engine.ts:171, scales with m7.purchases) and the rationale/evidence text.",
+    "recommendation": "Dedup by reducing colliding ids to the entry with max CONFIDENCE (impactScore ties), e.g. fold into a Map<id,Suggestion> before sortSuggestions at engine.ts:363-365. Do not key the reduce on impactScore.",
+    "severity": "must-fix"
+  },
+  {
+    "ref": "P0 \u2014 engine gating suite",
+    "problem": "The brief names 'engine DOA/scale gating' as a core suite, but analyzeAd (engine.ts:50) \u2014 the function that holds the DOA clause (#22) and SCALE gate (#23/#24 neighbors) \u2014 is NOT exported (only analyzeClient/analyzeScope/sortSuggestions are, engine.ts:345,368,373). A unit test cannot call the gating logic directly without either exporting analyzeAd or constructing a full Dataset and asserting through analyzeClient. Asserting through analyzeClient also runs sortSuggestions + the SCALE dedup (engine.ts:360-364), so the test observes post-dedup output, which is fine for kind-coverage but cannot isolate a single ad's gating decision.",
+    "recommendation": "Pick one and bake it into the P0 prompt: (a) export analyzeAd and unit-test it with hand-built minimal Ad/Client/Dataset fixtures (most precise, lets you test the #22 DOA clause boundary directly \u2014 e.g. a sub-0.5% CTR ad with 2-4 orders should/should-not emit PAUSE), OR (b) test through analyzeClient against the seeded demo dataset asserting the SUGGESTION-MIX invariant (at least one PAUSE_ENTITY/DOA, one SCALE_BUDGET, one consolidation appears \u2014 ensureCoverage at generate.ts:400-408 deterministically guarantees this mix). Option (b) is also the natural home for the determinism 'suggestion-mix coverage' invariant the brief already calls for, so it does double duty. Recommend (b) as the baseline + (a) only for the specific #22 boundary the P2 change touches.",
+    "severity": "must-fix"
+  },
+  {
+    "ref": "#10",
+    "problem": "The scope brief says 'LiveConfig persistence wiring (#10)' and finding #10's suggestedFix offers two opposite options \u2014 wire saveLiveConfig({defaultAccessToken: token, ...}) from the token input, OR remove the token input because the docs forbid the browser holding the token. The plan does not pick one. The naive reading ('wire saveLiveConfig from the token field in apply()') directly contradicts META_INTEGRATION.md:46-53 ('Store the token server-side, never in the browser') and :126 ('drop the in-browser token entirely'), and SettingsScreen.tsx:73,76-79 which already tells the user the browser must not hold it. Persisting defaultAccessToken to localStorage under meridian.live.config would make the app actively do the thing its own UI warns against.",
+    "recommendation": "Split #10: (a) persist the non-secret account MAPPING + business inputs (accounts[].clientId/adAccountId/businessId, clients[], windowDays) via saveLiveConfig, and call it inside SettingsScreen apply() before reload \u2014 this is the genuinely missing config path and is doc-aligned; (b) do NOT persist a Graph token from the browser by default. Either keep the token field as an explicitly-labeled dev/test-only convenience (accessToken left out of the persisted config in production builds), or drop the token input and have LiveConfig carry only the proxy-relative config, since GRAPH_BASE is meant to repoint at a token-injecting proxy (META_INTEGRATION.md:116-126). The 'more correct' answer is: persist mapping, not token. Also reconcile the two divergent 'Settings \u2192 Connection' vs 'Settings \u2192 Ad account mapping' strings (NotConfiguredError at liveProvider.ts:91 vs the doc) while in this file.",
+    "severity": "must-fix"
+  },
+  {
+    "ref": "#20",
+    "problem": "The plan says 'gate Undo to demo mode' but does not pin WHERE or on WHAT. The Undo closure is built in store.ts applySuggestion (lines 145-159) and calls captureRestore's client-side mutation (store.ts:221-226). If a future implementer gates on snapshot.mode, that field exists (provider/types.ts:19) but the store already tracks providerMode (store.ts:44, set from getProviderMode at :82) which is the canonical source. Gating in the wrong place (e.g. inside liveProvider.applyAction, which cannot reach back into the store's restore closure) would be a no-op, leaving the desync trap (a client-side mutation 'reverting' a committed Graph POST) unfixed.",
+    "recommendation": "Place the gate in store.ts applySuggestion at line 145: only construct the `undo` action when get().providerMode === 'demo' (or provider.mode === 'demo'); in live mode either omit Undo or surface an inverse applyAction POST. This is fully independent of #02 and typechecks today. Verify demo Undo is untouched: the demo branch must keep building the restore-backed undo exactly as now (the P0 'apply/undo still works' regression gate covers this). Note captureRestore also only handles campaign/adset/ad levels (store.ts:212-215), not account/client \u2014 out of scope here but worth a comment so the gate isn't mistaken for full coverage.",
+    "severity": "must-fix"
+  },
+  {
+    "ref": "P2/P4",
+    "problem": "#16 frequency rename (P2) edits format.ts:94 (KPI_LABELS.frequency) and its surfaced usages at ClientDashboard.tsx:89,93 and WeeklyReportScreen.tsx:101. P4 separately edits ClientDashboard.tsx (#37 maxHeight at line 182, plus the clickable-row/sparkline work). Both phases mutate ClientDashboard.tsx. Independently shippable logically, but if executed as separate branches off the same base they will textually conflict in that file.",
+    "recommendation": "Not a reorder \u2014 add an explicit note in the prompt-pack that P2 and P4 both touch ClientDashboard.tsx (and that #16 is a label-only change at format.ts:94 / the KPI strip, NOT the metrics.ts:41 math, per non-negotiable #3). Sequence P4 to rebase on P2, or scope #16's ClientDashboard edit to the label map only so the line-182 maxHeight edit is collision-free.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "P4/P5",
+    "problem": "P4's #27 (Settings apply-in-place) rewrites SettingsScreen.tsx apply() (currently setProviderMode+location.reload at lines 30-33) AND, per the #27 finding note, needs a new store action to swap provider in place. P5's #10 (LiveConfig persistence) also wires saveLiveConfig INTO the same apply(), and P5's #20 gates Undo inside store.ts applySuggestion (lines 133-159). So apply() (SettingsScreen.tsx) and store.ts are each edited by both P4 and P5.",
+    "recommendation": "Keep P4 before P5 (correct as-is) but flag the shared edit surface: P5's #10 must build on the apply() shape P4 leaves behind, and #20's Undo gating should reuse (not duplicate) any provider-mode check P4's #27 introduces. Add a prompt-pack note that P5 rebases on P4 for SettingsScreen.tsx.apply() and store.ts.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "#12",
+    "problem": "report.ts:82 computes projection = (spent / dayOfMonth) * daysInMonth with NO divide-by-zero guard, whereas engine.ts:260 uses Math.max(1, dayOfMonth). If the extracted computePacing simply mirrors one site, the report path could lose (or fail to gain) the guard. Additionally the two paths gather MTD rows differently (report.ts:78 filterByRange over adIds.flatMap(insightsByAd); engine.ts:257 aggregate(filterByRange(insightsForAdIds,...))), so unifying only the divisor leaves a second drift source.",
+    "recommendation": "The shared helper must (a) apply Math.max(1,dayOfMonth) so report.ts inherits the guard, (b) return the full {spent, projection, pace, dayOfMonth, daysInMonth} since engine.ts needs dayOfMonth/daysInMonth at :265,269, and (c) use one MTD-row gather for both callers. Add a P0 test asserting projection on dayOfMonth=1 (the latent edge) so the guard is pinned.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "#22",
+    "problem": "Dropping '&& m7.purchases <= 1' at engine.ts:71 is correct against Trigger C, but the code comment at engine.ts:67-70 explicitly asserts 'All three of the playbook's Trigger-C clauses ... must hold' while the code currently checks four. If only the clause is dropped, the comment becomes correct by accident; if the clause is kept anywhere, the comment stays wrong. Leaving the comment unedited risks a future reader re-adding the 4th clause.",
+    "recommendation": "Drop the clause AND update the comment to state the three clauses (impressions + spend gate + CTR floor) and that purchase-count is intentionally NOT gated per Trigger C. No new false-positive is opened: an ad reaching this branch already passed hasImprSignal+hasSpendSignal, and rule precedence means a genuinely converting low-CTR ad is rare; this is the playbook's intended early kill.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "#11",
+    "problem": "The brief says 'dead/unused thresholds (#11)' broadly; the finding establishes scaleCooldownDays is NOT undocumented dead code \u2014 it is ledgered (LEDGER.md) and inline-commented at engine.ts:151-153 as a deliberate live-mile placeholder. Deleting it would remove an honest placeholder and contradict the comment.",
+    "recommendation": "Limit #11's deletion to consolidateLearningDays and confidentPurchases only; keep scaleCooldownDays (optionally annotate). Ensure the P2 prompt names exactly these two to avoid an over-broad delete.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "#03/#07",
+    "problem": "AdAccount (types.ts:53-59) has no currency_offset field, and ZERO_DECIMAL (liveProvider.ts:259) wrongly contains HUF and TWD (returns offset 1 \u2192 100x-too-small budget write). The fix is two-part and the order matters for type-safety: adding currency_offset to the fields fetch without adding it to the AdAccount type (and threading it onto the snapshot account at liveProvider.ts:178) won't typecheck/won't be carried.",
+    "recommendation": "In one phase: (1) add currency_offset?:number to AdAccount, (2) extend the account fields pull (liveProvider.ts:170) and thread it onto the account record, (3) in applyAction prefer account.currency_offset over currencyOffset(currency), (4) remove 'HUF' and 'TWD' from ZERO_DECIMAL so the fallback is itself correct. Ledger as not-live-run.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "Determinism model (P0 non-negotiable #1, P3)",
+    "problem": "The brief and non-negotiable #1 describe rng() as one stream where 'changing the ORDER or COUNT of draws shifts the entire downstream dataset.' That is materially imprecise: the generator uses per-entity seeded streams \u2014 rngFor('creatives', client.id) for makeCreatives (generate.ts:105, where #32 lives), rngFor('struct', client.id) for campaign/adset/ad structure (generate.ts:293, where #33's line-359 fallback lives), rngFor('calib', client.id) (456), and rngFor('daily', p.ad.id) for insight rows (469). generateDataset (531-549) iterates clients with no shared cross-client stream. So a draw-count change in #32 perturbs only that client's 'creatives' stream (and what it feeds: creative IDs/profiles consumed by struct's sample() and by daily insights), NOT 'the entire dataset.' Per-client 'daily' insight streams are seeded by ad.id and are unaffected by #32/#33 as long as the set of ad.ids and their bound creative profiles is unchanged.",
+    "recommendation": "Reframe non-negotiable #1 as: 'Each entity's data is seeded independently via rngFor(domain, id); changing draw order/count within makeCreatives (creatives seed) or generateForClient (struct seed) shifts that client's creative selection and downstream structure, and any change to the SET of ad.ids or their bound creative profiles shifts that ad's daily insight stream. Daily insight math itself (daily seed) is stable unless inputs change.' This makes the determinism test's invariant set defensible and tells the P3 implementer exactly which streams each fix touches.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "#33",
+    "problem": "The brief lists #33 as a draw-count perturbation to guard against ('#32/#33 reorder rng() draws'). But the verified finding (FINDINGS #33, generate.ts:355-359) is that the `?? pick(rng, creatives)` branch is DEAD: nAds = intRange(rng,2,4) \u2264 4 and creatives.length is 7 or 12-18, so sample() always returns exactly nAds distinct entries and chosenCreatives[a] is never undefined. The branch never executes today, so it consumes zero draws today. Replacing it with `chosenCreatives[a] ?? chosenCreatives[a % chosenCreatives.length]` (the suggested deterministic, non-rng reuse) or asserting length===nAds perturbs NOTHING \u2014 it is determinism-neutral by construction. Only the live `?? pick(rng, struct)` form draws.",
+    "recommendation": "Drop #33 from the 'determinism hazard' framing. State explicitly that #33's fix must NOT reintroduce an rng() draw (the existing `?? pick(rng, creatives)` does draw from the struct stream if ever reached) \u2014 use a non-drawing fallback (index modulo) or a dev assertion. With that constraint, #33 needs no fixture regeneration and could even sit in P0-adjacent cleanup rather than P3.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "P0/P5 interaction",
+    "problem": "The brief scopes currencyOffset as a P0 core suite but the only behavior change to it (#03/#07: drop HUF/TWD from ZERO_DECIMAL, prefer per-account offset) lands in P5. If the P0 test is written to assert CURRENT behavior, it pins currencyOffset('HUF')===1 \u2014 which is the BUG (verified: HUF/TWD are 2-decimal, should be 100; liveProvider.ts:259). That test would then have to be edited in P5, and worse, could be mistaken for a passing 'lock' of wrong behavior.",
+    "recommendation": "In P0, write the currencyOffset suite to assert the CORRECT contract, not current behavior: zero-decimal set {JPY,KRW,VND,CLP,ISK,UGX}\u21921, three-decimal {KWD,BHD,JOD,OMR,TND}\u21921000, default\u2192100, AND explicitly HUF\u2192100, TWD\u2192100 (xfail/skip-with-comment in P0, flipped to passing in P5). This makes the test the regression gate that DRIVES the P5 fix rather than a snapshot of the bug. Note the broader per-account-offset change (#03) is live-only and ledgered-not-run, so the unit test can only cover the static-map correctness \u2014 which is exactly the HUF/TWD half.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "P0 \u2014 determinism suite mechanics",
+    "problem": "getDataset() (dataset.ts:6) is module-memoized in a single _dataset singleton, and metrics.ts/today() depend on the DATA_TODAY constant. A determinism test that calls getDataset() twice gets the SAME object reference (memoized), which trivially 'passes' reproducibility without proving the generator is deterministic. The real reproducibility property lives in generateDataset() (the un-memoized builder, generate.ts:531).",
+    "recommendation": "Test reproducibility against generateDataset() directly (call it twice, deep-compare a stable projection \u2014 e.g. sorted ad ids, per-ad summed spend/purchases rounded, total counts), NOT getDataset(). Assert structural invariants on one generateDataset() result: fixed client/BM count, every Insight.date within [earliestDate(), DATA_TODAY], funnel ordering impressions\u2265linkClicks\u2265landingPageViews\u2265addToCart\u2265purchases (per FINDINGS #15), reach\u22651, and the suggestion-mix coverage via analyzeClient on each non-onboarding client. These survive #32/#33 because they assert RANGES and RELATIONSHIPS, not seeded values \u2014 which validates the brief's strategy.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "P0 \u2014 missing high-leverage target",
+    "problem": "The four named suites (currencyOffset, metrics aggregate/safeDiv, engine gating, RNG determinism) omit the metrics DATE math (addDays/daysBetween/previousRange/makeRange/enumerateDates, metrics.ts:107-166), which is (a) the highest-churn correctness surface in the plan \u2014 #17 extracts addDays into a new src/lib/date.ts in P3, and #21 (UTC/timezone) touches date logic, and (b) trivially pure-unit-testable. A previousRange off-by-one or an addDays UTC regression would silently corrupt every delta and every window in the app, and nothing else in the suite would catch it.",
+    "recommendation": "Add a small date-math suite to P0: addDays crosses month/year and DST-irrelevant UTC boundaries; daysBetween is symmetric-magnitude and integer; previousRange returns an equal-length, immediately-preceding, non-overlapping window (len = daysBetween+1); makeRange('today'/'yesterday') yields start===end; enumerateDates length === daysBetween+1 for in-window ranges. This is the cheapest insurance for the P3 date.ts extraction (#17) \u2014 the new module should be created in P0-or-P3 WITH these tests so the extraction is verified by a green diff, not just a typecheck.",
+    "severity": "should-fix"
+  },
+  {
+    "ref": "#03/#19",
+    "problem": "#03 (prefer per-account currency_offset over the static map) requires currency_offset to actually be fetched and threaded onto the AdAccount record. The only fetch site is the account-node block (liveProvider.ts:168-178), which currently uses edge-shaped graphGet on a node path \u2014 the exact bug #19 fixes. If #03 adds `currency_offset` to the fields list of the existing broken graphGet<...>(...)[0] call, the value will be parsed from page.data (undefined for a node response) and silently fall back, so #03's fix is inert unless #19's node-GET correction lands first/together. The plan lists them as separate bullets in P5 with no stated dependency.",
+    "recommendation": "Sequence #19 before (or fused with) #03 within P5: implement the node-GET path first so the account node parses, THEN add currency_offset to that node fetch and thread it onto AdAccount. Add `currency_offset?: number` as an OPTIONAL field to AdAccount (types.ts:53-59) so the demo generator (generate.ts:294-300) and demoProvider need no change and the build stays green. In applyAction (line 235-236) prefer acct.currency_offset, fall back to currencyOffset(currency). This whole chain typechecks without #02 because it lives in the pre-throw account loop.",
+    "severity": "should-fix"
+  }
+]
