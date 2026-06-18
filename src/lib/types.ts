@@ -12,6 +12,13 @@ export type ISODate = string // 'YYYY-MM-DD'
 
 export type EntityLevel = 'client' | 'account' | 'campaign' | 'adset' | 'ad'
 
+/** A reference to any entity in the graph — used to open the entity-detail drawer
+ *  (Wave 2) and to key per-entity history. */
+export interface EntityRef {
+  level: EntityLevel
+  entityId: string
+}
+
 // 'agency' = a client living inside our agency's own Business Manager.
 // 'partner' = a client on their OWN Business Manager that we access via partner
 //             sharing / a system user. Both are first-class in Meridian.

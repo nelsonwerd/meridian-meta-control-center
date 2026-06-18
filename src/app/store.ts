@@ -10,6 +10,7 @@ import {
 } from '../lib/provider'
 import { makeRange } from '../lib/metrics'
 import { loadThresholds, resetThresholds as applyResetThresholds, setThreshold as applyThreshold } from '../lib/ai/thresholds'
+import { createConfigStore, type ClientConfig, type ClientTargets } from '../lib/config'
 import type { DateRange, ISODate, RangePreset, Scope, Suggestion } from '../lib/types'
 
 export interface Toast {
@@ -47,6 +48,8 @@ interface MeridianState {
   applied: AppliedAction[]
   appliedSuggestionIds: Set<string>
   dismissedSuggestionIds: Set<string>
+  /** per-client target (+ Wave 2 threshold) overrides, applied onto snapshot Clients */
+  clientConfig: Record<string, ClientConfig>
 
   init: () => Promise<void>
   /** Swap demo/live provider in place + reload the snapshot — no full-page reload,
@@ -63,9 +66,51 @@ interface MeridianState {
   /** tune an engine threshold and re-derive every screen */
   setThreshold: (key: string, value: number) => void
   resetThresholds: () => void
+  /** set/clear a client's target overrides; re-applies onto the snapshot + re-derives */
+  setClientConfig: (cfg: ClientConfig) => void
+  resetClientConfig: (clientId: string) => void
 }
 
 const genId = () => Math.random().toString(36).slice(2, 10)
+
+const configStore = createConfigStore()
+
+/** Pristine seeded targets, captured ONCE (they are constant within a session), so
+ *  config edits/resets re-derive from a clean base rather than an already-applied
+ *  snapshot. Mirrors how thresholds.ts captures DEFAULTS at module load. */
+let baseClientTargets: Record<string, ClientTargets> | null = null
+
+function captureBaseTargets(snapshot: Snapshot) {
+  if (baseClientTargets) return
+  baseClientTargets = {}
+  for (const c of snapshot.clients) {
+    baseClientTargets[c.id] = {
+      targetCPA: c.targetCPA,
+      targetROAS: c.targetROAS,
+      monthlyBudget: c.monthlyBudget,
+      avgOrderValue: c.avgOrderValue,
+      contributionMargin: c.contributionMargin,
+    }
+  }
+}
+
+/** Apply per-client config ONTO the snapshot's Client objects in place: reset each
+ *  to its base target, then overlay the override. `clientById` holds the same object
+ *  references, so the engine + screens (the single read source) immediately see the
+ *  effective targets — exactly like loadThresholds() mutating the global THRESHOLDS. */
+function applyConfigInPlace(snapshot: Snapshot, cfgMap: Record<string, ClientConfig>) {
+  if (!baseClientTargets) return
+  for (const c of snapshot.clients) {
+    const base = baseClientTargets[c.id]
+    if (!base) continue
+    const cfg = cfgMap[c.id]
+    c.targetCPA = cfg?.targetCPA ?? base.targetCPA
+    c.targetROAS = cfg?.targetROAS ?? base.targetROAS
+    c.monthlyBudget = cfg?.monthlyBudget ?? base.monthlyBudget
+    c.avgOrderValue = cfg?.avgOrderValue ?? base.avgOrderValue
+    c.contributionMargin = cfg?.contributionMargin ?? base.contributionMargin
+  }
+}
 
 function initialTheme(): Theme {
   const stored = localStorage.getItem('meridian.theme') as Theme | null
@@ -88,6 +133,7 @@ export const useStore = create<MeridianState>((set, get) => ({
   applied: [],
   appliedSuggestionIds: new Set(),
   dismissedSuggestionIds: new Set(),
+  clientConfig: {},
 
   async init() {
     set({ loading: true, error: null })
@@ -95,7 +141,10 @@ export const useStore = create<MeridianState>((set, get) => ({
     document.documentElement.setAttribute('data-theme', get().theme)
     try {
       const snapshot = await get().provider.loadSnapshot()
-      set({ snapshot, loading: false })
+      const clientConfig = await configStore.load()
+      captureBaseTargets(snapshot) // pristine seeded targets (once)
+      applyConfigInPlace(snapshot, clientConfig) // overlay per-client overrides
+      set({ snapshot, clientConfig, loading: false })
     } catch (e) {
       set({ error: (e as Error).message, loading: false })
     }
@@ -212,6 +261,23 @@ export const useStore = create<MeridianState>((set, get) => ({
   resetThresholds() {
     applyResetThresholds()
     bumpSnapshot(set, () => ({}))
+  },
+
+  setClientConfig(cfg) {
+    const next = { ...get().clientConfig, [cfg.clientId]: cfg }
+    void configStore.save(cfg)
+    const { snapshot } = get()
+    if (snapshot) applyConfigInPlace(snapshot, next)
+    bumpSnapshot(set, () => ({ clientConfig: next }))
+  },
+
+  resetClientConfig(clientId) {
+    const next = { ...get().clientConfig }
+    delete next[clientId]
+    void configStore.reset(clientId)
+    const { snapshot } = get()
+    if (snapshot) applyConfigInPlace(snapshot, next)
+    bumpSnapshot(set, () => ({ clientConfig: next }))
   },
 }))
 
