@@ -9,7 +9,9 @@
 
 | Capability | How it was verified |
 |---|---|
-| Production build + typecheck | `npm run build` → tsc clean, 2420 modules bundled |
+| Production build + strict typecheck | `npm run build` → tsc clean (`noUnusedLocals`/`noUnusedParameters` now on), 2422 modules; output code-split into app / react / recharts chunks |
+| Automated test suite | `npm run test:run` → **33 Vitest tests green** across 6 suites (currencyOffset, metrics/safeDiv, date math, engine gating + determinism, weekly report, DOA boundary) |
+| Lint + CI | `npm run lint` → ESLint (typescript-eslint + react-hooks) clean; GitHub Actions runs lint + build + tests on every push/PR |
 | Deterministic demo dataset | `__meridian.summary()` / `.clientCPAs()` — 7 clients, 3 BMs, ~26 campaigns, ~250 ads, ~13.5k daily insight rows; per-client CPA clusters around each target |
 | Metric roll-ups | selectors aggregate ad→adset→campaign→client→portfolio over any range; verified against debug surface |
 | AI engine coverage | `__meridian.suggestionMix()` — all 7 suggestion types surface (scale/cut/pause/fatigue/consolidate/reallocate/watch) with sane severities |
@@ -53,8 +55,9 @@
 Auth / users / roles · real OAuth + token storage · billing · alerting/email
 delivery of reports · mobile-native · automated scheduled syncs · a backend (the
 running artifact is the frontend + demo; the backend proxy is documented, not
-built). Bundle is a single ~225 KB-gzip chunk — fine for internal use; route-level
-code-splitting is a known, easy optimization, not done.
+built). The bundle is now **code-split** into vendor chunks (app ~48 KB gzip,
+react ~68 KB, recharts ~115 KB) — vendor caches across app deploys; per-route
+`React.lazy` splitting remains an available further optimization, not done.
 
 ## What only a human / the market can finish (the honest residual)
 
@@ -165,3 +168,51 @@ confidence signal.
   data — present and ready for live.
 - **Human design taste sign-off** remains the residual — the UI cleared the
   deep-dive's UX-lane critic + the build-loop visual passes, not a designer.
+
+---
+
+## Round 4 — pre-live hardening pass (deep-dive backlog → 6-phase build)
+
+A second deep-dive mapped the whole codebase and adversarially verified a 51-item
+backlog (evidence: `docs/hardening/`). A validation deep-dive then pressure-tested
+the fix plan (catching a no-op dedup, an incomplete delta fix, a token-in-browser
+contradiction, an ordering dependency) before a 6-phase build executed it, each
+phase verified to its gate (tsc + tests, and a live demo preview for the UI phase).
+
+**Landed (verified):**
+- **Safety net (new):** Vitest + 33 tests + a GitHub Actions CI gate + a real
+  ESLint config (`lint` is no longer just `tsc`); `noUnusedLocals`/`Parameters` on.
+- **Engine/metrics correctness:** DOA rule now matches the playbook (no purchase
+  gate — sub-0.5% CTR ads with 2–4 orders no longer slip every rule); SCALE dedup
+  keeps the highest-confidence sibling (was a silent first-seen); REALLOCATE spread
+  ignores thin outliers; pacing math shared by engine + report (one guarded helper);
+  KPI delta shows "new" instead of a fabricated +100% with no baseline; the
+  "Frequency" KPI is honestly relabeled "Avg daily frequency" (label only — the
+  fatigue threshold is calibrated to that value and unchanged); two dead thresholds
+  removed; weekly-report icon now derives from a `direction` field so it can't
+  disagree with the headline; LLM prompt now carries the breakeven ROAS it judges.
+- **UX / a11y:** clickable table rows are real keyboard-focusable controls; charts
+  expose `role="img"` summaries and decorative sparklines are `aria-hidden`; the
+  tooltip is keyboard/touch reachable; toasts pause on hover/focus and their timer
+  is lifecycle-cancelled; Settings swaps provider **in place** (no full reload);
+  Creative Lab shows all clients (was capped at 6); sparkline handles single-point
+  ranges; misc.
+- **Live scaffold hardened (code only — still NOT executed):** per-account
+  `currency_offset` (with **HUF/TWD un-mis-bucketed** — a latent 100x budget bug);
+  node-vs-edge `graphGet` (no false-success connection test); writes parse the
+  response (2xx ≠ success) and unsupported multi-step kinds return a clear error;
+  insights window computed in the account timezone; rate-limit (BUC) backoff
+  groundwork; the account **mapping** persists to `LiveConfig` (the Graph token is
+  deliberately NOT stored from the browser). Undo is gated to demo mode (a
+  client-side restore can't reverse a committed live write).
+
+**Deliberately NOT reached this pass (honest residual):**
+- **Live structure→type mapping (#02)** — the campaigns/adsets/ads/creatives
+  mapping + shared index builder is the documented live last-mile. Its reserved
+  accumulators remain in `liveProvider.ts` (annotated, not deleted); `loadSnapshot`
+  still throws there. Deferred to `docs/PROMPT_PACK_live_integration.md` — writing
+  it blind (no credentials to verify against) would risk plausible-but-wrong code.
+- **All P5 live fixes are typecheck/review-verified only, not run against the API.**
+- **Two perf nits deferred** (constant-factor at demo scale, working code): the
+  3-screen dashboard memo dedup and the ScopeSwitcher per-render metric memo —
+  revisit at real multi-BM book size, not worth the regression risk now.
