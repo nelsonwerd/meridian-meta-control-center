@@ -11,7 +11,7 @@ import {
 import { makeRange } from '../lib/metrics'
 import { loadThresholds, resetThresholds as applyResetThresholds, setActiveClientThresholds, setThreshold as applyThreshold } from '../lib/ai/thresholds'
 import { createConfigStore, type ClientConfig, type ClientTargets } from '../lib/config'
-import type { DateRange, ISODate, RangePreset, Scope, Suggestion } from '../lib/types'
+import type { DateRange, EntityRef, ISODate, RangePreset, Scope, Suggestion } from '../lib/types'
 
 export interface Toast {
   id: string
@@ -50,6 +50,8 @@ interface MeridianState {
   dismissedSuggestionIds: Set<string>
   /** per-client target (+ Wave 2 threshold) overrides, applied onto snapshot Clients */
   clientConfig: Record<string, ClientConfig>
+  /** entity-detail drawer target (null = closed) — ephemeral UI state, not the URL */
+  drawer: EntityRef | null
 
   init: () => Promise<void>
   /** Swap demo/live provider in place + reload the snapshot — no full-page reload,
@@ -69,6 +71,8 @@ interface MeridianState {
   /** set/clear a client's target overrides; re-applies onto the snapshot + re-derives */
   setClientConfig: (cfg: ClientConfig) => void
   resetClientConfig: (clientId: string) => void
+  openDrawer: (ref: EntityRef) => void
+  closeDrawer: () => void
 }
 
 const genId = () => Math.random().toString(36).slice(2, 10)
@@ -134,6 +138,7 @@ export const useStore = create<MeridianState>((set, get) => ({
   appliedSuggestionIds: new Set(),
   dismissedSuggestionIds: new Set(),
   clientConfig: {},
+  drawer: null,
 
   async init() {
     set({ loading: true, error: null })
@@ -281,6 +286,14 @@ export const useStore = create<MeridianState>((set, get) => ({
     if (snapshot) applyConfigInPlace(snapshot, next)
     setActiveClientThresholds(next)
     bumpSnapshot(set, () => ({ clientConfig: next }))
+  },
+
+  openDrawer(ref) {
+    set({ drawer: ref })
+  },
+
+  closeDrawer() {
+    set({ drawer: null })
   },
 }))
 

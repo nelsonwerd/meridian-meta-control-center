@@ -183,6 +183,7 @@ export function Campaigns() {
 }
 
 function Row({
+  level,
   depth,
   name,
   entityId,
@@ -212,6 +213,7 @@ function Row({
   open?: boolean
   onToggle?: () => void
 }) {
+  const openDrawer = useStore((s) => s.openDrawer)
   const onCpa = m.cpa > 0 && m.cpa <= target
   return (
     <tr
@@ -233,7 +235,9 @@ function Row({
           {client && <Avatar monogram={client.monogram} color={client.accentColor} size={22} />}
           <div className="min-w-0">
             <div className={cn('flex items-center gap-1.5 truncate', depth === 0 ? 'font-medium text-ink' : 'text-ink-muted')}>
-              {name}
+              <button onClick={() => openDrawer({ level, entityId })} className="truncate rounded text-left transition-colors hover:text-brand focus-ring" title="Open details">
+                {name}
+              </button>
               {flagged ? (
                 <Tooltip label={`${flagged} AI recommendation${flagged > 1 ? 's' : ''} — view`}>
                   <Link to={`/recommendations?entity=${entityId}`} className="text-brand hover:text-brand/80" aria-label="View AI recommendations for this entity">

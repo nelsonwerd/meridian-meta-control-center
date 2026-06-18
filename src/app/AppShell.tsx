@@ -6,6 +6,7 @@ import { Toasts } from '../components/shell/Toasts'
 import { useStore } from './store'
 import { BootScreen } from '../components/shell/BootScreen'
 import { ErrorBoundary } from '../components/shell/ErrorBoundary'
+import { EntityDrawer } from '../components/shell/EntityDrawer'
 
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(false)
@@ -46,6 +47,7 @@ export function AppShell() {
         </main>
       </div>
       <Toasts />
+      <EntityDrawer />
     </div>
   )
 }

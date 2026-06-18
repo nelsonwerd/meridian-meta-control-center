@@ -56,7 +56,9 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
   const snapshot = useSnapshot()
   const apply = useStore((st) => st.applySuggestion)
   const dismiss = useStore((st) => st.dismissSuggestion)
+  const openDrawer = useStore((st) => st.openDrawer)
   const applied = useStore((st) => st.appliedSuggestionIds.has(s.id))
+  const openEntity = () => openDrawer({ level: s.level, entityId: s.entityId })
   const [confirming, setConfirming] = useState(false)
   const meta = META[s.type]
   const Icon = meta.icon
@@ -64,7 +66,10 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
   const path = snapshot ? parentPath(snapshot, s.level, s.entityId) : ''
 
   return (
-    <div className="card group relative overflow-hidden p-4 transition-all duration-200 hover:border-line-strong hover:shadow-pop">
+    <div
+      onClick={(e) => { if (!(e.target as HTMLElement).closest('button')) openEntity() }}
+      className="card group relative cursor-pointer overflow-hidden p-4 transition-all duration-200 hover:border-line-strong hover:shadow-pop"
+    >
       <span className="absolute inset-y-0 left-0 w-1" style={{ background: SEV_ACCENT[s.severity] }} />
       <div className="pl-2">
         <div className="flex items-center gap-2">
@@ -84,7 +89,9 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
           </div>
         </div>
 
-        <h3 className="mt-2.5 text-sm font-semibold leading-snug text-ink">{s.title}</h3>
+        <button onClick={openEntity} className="mt-2.5 block rounded text-left text-sm font-semibold leading-snug text-ink transition-colors hover:text-brand focus-ring">
+          {s.title}
+        </button>
 
         {/* Always identify the exact entity + its level + parent path; showClient
             only toggles the client avatar/name (shown in portfolio/BM views). */}
