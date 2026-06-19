@@ -137,6 +137,123 @@ consolidate all run on heuristics (`src/lib/ai/engine.ts`). The LLM layer
 2. Set `USE_LLM = true` in `llm.ts`. `buildNarrativePrompt()` already constructs
    a grounded, numbers-first prompt from the engine's findings.
 
+## 7. Persistence backend — `client_config` + `decision_log`
+
+Two browser-local seams persist agency intent and the accountability ledger today, both
+behind **async interfaces** so the backend is a drop-in swap (no UI/engine change):
+
+| Seam | File | Local (today) | Backend (target) |
+|---|---|---|---|
+| Per-client config | `src/lib/config/` (`ConfigStore`) | `localStorage` `meridian.config` | `client_config` table |
+| Decision ledger | `src/lib/history/` (`HistoryStore`) | `localStorage` `meridian.history.{demo,live}` | `decision_log` table |
+
+The async signatures already match REST shapes — `ConfigStore.{load,save,reset}` and
+`HistoryStore.{record,forEntity,forClient,all,attachOutcome}`. Wiring is a fetch swap.
+
+### 7.1 Tenancy (applies to both tables)
+The local impl is single-tenant (one browser). The backend is multi-tenant: every row
+carries **`workspace_id`** (the agency tenant). Scope **all** reads/writes by
+`workspace_id` (Postgres RLS recommended). The local impl ignores tenancy.
+
+### 7.2 `client_config`
+Per-client business inputs the Graph API does not carry (targets, AOV, margin) plus
+engine tuning (overrides/preset) and — later — the Tier-2 calibration layer.
+
+```sql
+CREATE TABLE client_config (
+  workspace_id        uuid        NOT NULL,
+  client_id           text        NOT NULL,
+  target_cpa          numeric,
+  target_roas         numeric,
+  monthly_budget      numeric,
+  avg_order_value     numeric,
+  contribution_margin numeric,
+  threshold_overrides jsonb       NOT NULL DEFAULT '{}',  -- Partial<Record<ThresholdKey, number>>
+  preset              text        CHECK (preset IN ('conservative','balanced','aggressive')),
+  calibration         jsonb       NOT NULL DEFAULT '{}',  -- Partial<Record<ThresholdKey,CalibrationEntry>>; see CALIBRATION_DESIGN.md
+  updated_at          timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_id, client_id)                   -- server-side unique key (A6)
+);
+```
+
+- The `calibration` column is **machine-written** (a projection of `decision_log`, §7.4)
+  and **separately clearable** from the human-set columns — see `CALIBRATION_DESIGN.md`.
+  It is design-only; no producer ships this round. `ClientConfig` gains a matching
+  `calibration?: Partial<Record<ThresholdKey, CalibrationEntry>>` field the same round, so
+  the TS and SQL stay in lockstep.
+- API: `GET /api/config/clients` → `Record<clientId, ClientConfig>` (the `load()` shape);
+  `PUT /api/config/clients/{clientId}` (upsert, the `save()` shape);
+  `DELETE /api/config/clients/{clientId}` (the `reset()` shape).
+- `LiveConfig.clients` (`liveProvider.ts:72`) becomes a **derived projection** of this
+  table at provider-build time (per architecture A2 — one config home).
+
+### 7.3 `decision_log`
+The Decision & Outcome Ledger. Stores nested metric snapshots as JSONB, distinguishes
+**surfaced** from **decided**, and carries an audit timestamp on the outcome update.
+
+```sql
+CREATE TYPE decision_event AS ENUM ('surfaced','applied','dismissed','acknowledged');
+
+CREATE TABLE decision_log (
+  id                  uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id        uuid           NOT NULL,
+  mode                text           NOT NULL CHECK (mode IN ('demo','live')),  -- segregation parity
+  client_id           text           NOT NULL,
+  entity_id           text           NOT NULL,
+  level               text           NOT NULL,   -- EntityLevel: ad|adset|campaign|client|account
+  suggestion_type     text           NOT NULL,
+  severity            text           NOT NULL,
+  event               decision_event NOT NULL,   -- surfaced vs applied vs dismissed (A6)
+  confidence          numeric        NOT NULL,
+  pre_metrics         jsonb          NOT NULL,    -- { cpa, spend, roas, purchases } at decision time
+  projected           jsonb,                      -- { metric, note? }
+  outcome             jsonb,                      -- { capturedAt, cpa, spend, roas, verdict } | NULL
+  created_at          timestamptz    NOT NULL DEFAULT now(),  -- := body.decidedAt (app-stamped); now() only a fallback
+  outcome_captured_at timestamptz                             -- audit: when outcome was attached (A6)
+);
+CREATE INDEX ON decision_log (workspace_id, mode, client_id, created_at DESC);
+CREATE INDEX ON decision_log (workspace_id, mode, entity_id);
+```
+
+- **`event` enum (surfaced vs decided).** `DecisionAction` (history/types.ts) is
+  `'applied' | 'dismissed' | 'acknowledged'` — three values; `event` carries all three.
+  Today only `applied`/`dismissed` are emitted (`acknowledged` is reserved — no UI path
+  records it yet; if one ships, it persists as `event='acknowledged'`). Success-metric #4
+  also wants the *surfaced* funnel — every suggestion shown — so the backend adds a
+  `surfaced` event (emitted on render) for "shown → decided" conversion analysis;
+  `surfaced` is backend-only and the local impl ignores it. **Calibration sample:** only
+  `applied` decisions' outcomes count toward the §5 hit-rate — `dismissed`/`acknowledged`/
+  `surfaced` are excluded (no action was taken to measure).
+- **Mode-segregation.** Demo decisions **never leave the browser** — the backend stores
+  live decisions only, so `mode` is effectively always `'live'` server-side. The column
+  is kept for parity and as a hard guard (reject `mode='demo'` inserts). This preserves
+  the firewall: a simulated decision can never enter the real ledger.
+- **`outcome` is NULL until measured on live data** (firewall — strictly null in demo;
+  a live outcome-capture job back-fills it and stamps `outcome_captured_at`). The verdict
+  is **correlational**, never a causal savings claim.
+- API mirroring the seam (each preserves the exact async contract so the `localStorage`→
+  fetch swap is a drop-in):
+  - `POST /api/history` — body is `Omit<DecisionRecord,'id'>` (server assigns `id`),
+    **returns the created `DecisionRecord`** (201 + body) to satisfy `record()`'s
+    `Promise<DecisionRecord>`.
+  - `GET /api/history?entity=…|client=…|all` → **`DecisionRecord[]`**, filtered to the
+    active `mode` AND `workspace_id` (matching `HistoryStore`'s "current mode only"
+    contract — not workspace alone). Maps 1:1 to `forEntity`/`forClient`/`all`.
+  - `PATCH /api/history/{id}/outcome` (`attachOutcome()`) — sets `outcome` +
+    `outcome_captured_at`; a `null` body **clears** `outcome` (and nulls
+    `outcome_captured_at`). Must **reject loudly** (409/422, not a silent 200) when the
+    row's `mode='demo'` or the id is unknown — so a rejected outcome write is observable
+    (the shipped local store no-ops here, which is firewall-safe but silent).
+
+### 7.4 Live outcome capture (prerequisite for Tier 2)
+A scheduled job is what makes outcomes (and therefore calibration) real:
+- For each `decision_log` row with `outcome IS NULL` and `created_at` older than the
+  measurement window (e.g. 7–14d), pull the entity's post-decision insights from the
+  Graph API, compute `{ cpa, spend, roas, verdict }`, and `PATCH …/outcome`.
+- The **calibration projection** (`CALIBRATION_DESIGN.md` §3/§5) reads these populated
+  outcomes, grouped by `(client_id, suggestion_type → threshold key)`, and writes
+  `client_config.calibration`. Deterministic, bounded, disclosed — **not** Tier-3 ML.
+
 ## Go-live checklist
 
 - [ ] App created, 6 scopes approved via App Review + Business Verification
@@ -149,3 +266,7 @@ consolidate all run on heuristics (`src/lib/ai/engine.ts`). The LLM layer
 - [ ] Attribution windows set intentionally
 - [ ] Pin & re-verify Graph API version (currently `v25.0`)
 - [ ] (Optional) `/api/ai/narrate` proxy live, `USE_LLM = true`
+- [ ] `client_config` + `decision_log` tables provisioned with `workspace_id` tenancy (RLS)
+- [ ] Config + history API endpoints live; `ConfigStore`/`HistoryStore` repointed from `localStorage` to fetch
+- [ ] Live outcome-capture job scheduled (back-fills `decision_log.outcome` + `outcome_captured_at`)
+- [ ] (Tier 2, later) calibration projection enabled per `CALIBRATION_DESIGN.md` — backtested first
