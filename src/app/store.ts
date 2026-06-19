@@ -11,6 +11,8 @@ import {
 import { makeRange } from '../lib/metrics'
 import { loadThresholds, resetThresholds as applyResetThresholds, setActiveClientThresholds, setThreshold as applyThreshold } from '../lib/ai/thresholds'
 import { createConfigStore, type ClientConfig, type ClientTargets } from '../lib/config'
+import { createHistoryStore, type DecisionAction } from '../lib/history'
+import { metricsForEntity } from '../lib/selectors'
 import type { DateRange, EntityRef, ISODate, RangePreset, Scope, Suggestion } from '../lib/types'
 
 export interface Toast {
@@ -62,7 +64,7 @@ interface MeridianState {
   setRange: (r: DateRange) => void
   toggleTheme: () => void
   applySuggestion: (s: Suggestion) => Promise<void>
-  dismissSuggestion: (id: string) => void
+  dismissSuggestion: (s: Suggestion) => void
   pushToast: (kind: Toast['kind'], message: string, action?: Toast['action']) => void
   removeToast: (id: string) => void
   /** tune an engine threshold and re-derive every screen */
@@ -78,6 +80,34 @@ interface MeridianState {
 const genId = () => Math.random().toString(36).slice(2, 10)
 
 const configStore = createConfigStore()
+
+/** The Decision & Outcome Ledger (Wave 3). One mode-segregated instance shared by the
+ *  recording hooks (here) and the async readers (the drawer + Recommendations Activity
+ *  panel). Local impl now; the documented `decision_log` backend is a drop-in later. */
+export const historyStore = createHistoryStore()
+
+/** Record an applied/dismissed decision ADDITIVELY and fire-and-forget — it never
+ *  blocks or fails the apply/dismiss UI, and it never touches the in-session dedup
+ *  Sets the live feed depends on. `preMetrics` is the entity's last-7-day snapshot at
+ *  decision time (the engine scores on the last 7 days). `outcome` is strictly null:
+ *  it is captured later on LIVE data over elapsed time, and can never move in demo. */
+function recordDecision(snapshot: Snapshot, mode: ProviderMode, s: Suggestion, action: DecisionAction) {
+  const m = metricsForEntity(snapshot, s.level, s.entityId, makeRange('7d'))
+  void historyStore.record({
+    mode,
+    clientId: s.clientId,
+    entityId: s.entityId,
+    level: s.level,
+    suggestionType: s.type,
+    severity: s.severity,
+    action,
+    confidence: s.confidence,
+    preMetrics: { cpa: m.cpa, spend: m.spend, roas: m.roas, purchases: m.purchases },
+    projected: { metric: s.projectedImpact.metric, note: s.projectedImpact.note },
+    decidedAt: new Date().toISOString(),
+    outcome: null, // captured later on LIVE data over elapsed time; strictly null in demo
+  })
+}
 
 /** Pristine seeded targets, captured ONCE (they are constant within a session), so
  *  config edits/resets re-derive from a clean base rather than an already-applied
@@ -199,7 +229,7 @@ export const useStore = create<MeridianState>((set, get) => ({
       proposedBudget: s.action.proposedBudget,
     }
     if (s.action.kind === 'none') {
-      get().dismissSuggestion(s.id)
+      get().dismissSuggestion(s)
       return
     }
     // Capture the entity's prior state so the change is reversible.
@@ -214,6 +244,10 @@ export const useStore = create<MeridianState>((set, get) => ({
             ...st.applied,
           ].slice(0, 50),
         }))
+        // Ledger: record the applied decision additively (fire-and-forget). Independent
+        // of the session Sets above — applyAction wrote no insight rows, so preMetrics
+        // (the 7d snapshot) reflects the pre-action trajectory.
+        recordDecision(snapshot, get().providerMode, s, 'applied')
         // Undo only in demo: the demo restore mutates the in-memory snapshot, which
         // genuinely reverses a simulated change. In live mode the write is already
         // committed at Meta, so a client-side restore would desync UI from reality —
@@ -241,8 +275,12 @@ export const useStore = create<MeridianState>((set, get) => ({
     }
   },
 
-  dismissSuggestion(id) {
-    set((st) => ({ dismissedSuggestionIds: new Set(st.dismissedSuggestionIds).add(id) }))
+  dismissSuggestion(s) {
+    // Keep the in-session dedup Set as the live-feed source (unchanged), and ALSO
+    // record the dismissal additively in the ledger (fire-and-forget).
+    set((st) => ({ dismissedSuggestionIds: new Set(st.dismissedSuggestionIds).add(s.id) }))
+    const { snapshot } = get()
+    if (snapshot) recordDecision(snapshot, get().providerMode, s, 'dismissed')
   },
 
   pushToast(kind, message, action) {

@@ -115,3 +115,21 @@ export function parentPath(ds: Dataset, level: EntityLevel, entityId: string): s
   }
   return '' // campaign name IS the entity name; client/account have no in-feed parent
 }
+
+/** Display name for any entity, resolved from the live snapshot at render time. The
+ *  decision ledger stores only ids (no denormalized name), so the Activity panel
+ *  resolves names here. Returns '' if the id no longer resolves in the current mode. */
+export function entityName(ds: Dataset, level: EntityLevel, entityId: string): string {
+  switch (level) {
+    case 'ad':
+      return ds.adById.get(entityId)?.name ?? ''
+    case 'adset':
+      return ds.adSetById.get(entityId)?.name ?? ''
+    case 'campaign':
+      return ds.campaignById.get(entityId)?.name ?? ''
+    case 'account':
+      return ds.accounts.find((a) => a.id === entityId)?.name ?? ds.clientById.get(entityId)?.name ?? ''
+    case 'client':
+      return ds.clientById.get(entityId)?.name ?? ''
+  }
+}

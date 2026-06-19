@@ -146,7 +146,7 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
           ) : (
             <div className="flex items-center gap-1.5">
               <button
-                onClick={() => dismiss(s.id)}
+                onClick={() => dismiss(s)}
                 aria-label="Dismiss suggestion"
                 className="flex h-8 w-8 items-center justify-center rounded-lg text-ink-subtle transition-colors hover:bg-surface-3 hover:text-ink"
                 title="Dismiss"

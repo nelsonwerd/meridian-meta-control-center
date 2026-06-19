@@ -1,13 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { CheckCircle2, History, Sparkles, X } from 'lucide-react'
+import { CheckCircle2, Clock, History, MinusCircle, Sparkles, X } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
 import { SuggestionCard } from '../components/blocks/SuggestionCard'
 import { EmptyState, Segmented, SectionHeader } from '../components/ui/primitives'
 import { useSnapshot } from '../app/hooks'
-import { useStore } from '../app/store'
+import { historyStore, useStore } from '../app/store'
 import { analyzeScope } from '../lib/ai/engine'
+import { clientsForScope, entityName as entityDisplayName } from '../lib/selectors'
+import { fmtDateTime, SUGGESTION_TYPE_LABEL } from '../lib/format'
 import { cn } from '../lib/cn'
+import type { DecisionRecord } from '../lib/history'
 import type { EntityLevel, Severity, SuggestionType } from '../lib/types'
 
 type SevFilter = 'all' | Severity
@@ -26,7 +29,7 @@ export function Recommendations() {
   const scope = useStore((s) => s.scope)
   const dismissed = useStore((s) => s.dismissedSuggestionIds)
   const appliedIds = useStore((s) => s.appliedSuggestionIds)
-  const applied = useStore((s) => s.applied)
+  const openDrawer = useStore((s) => s.openDrawer)
   const [sev, setSev] = useState<SevFilter>('all')
   const [group, setGroup] = useState<GroupFilter>('all')
   const [sort, setSort] = useState<'priority' | 'impact'>('priority')
@@ -60,6 +63,23 @@ export function Recommendations() {
     if (sort === 'impact') return [...list].sort((a, b) => b.impactScore - a.impactScore)
     return list // already severity-then-confidence sorted by the engine
   }, [all, sev, group, sort, level])
+
+  // Activity = the PERSISTED decision ledger (mode-segregated), scoped to the current
+  // view and surviving reload. Read async at the seam (never the sync engine path);
+  // re-runs whenever a decision is applied/dismissed (appliedIds/dismissed change).
+  const [ledger, setLedger] = useState<DecisionRecord[] | null>(null)
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      const clientIds = new Set(clientsForScope(snapshot, scope).map((c) => c.id))
+      const recs = (await historyStore.all()).filter((r) => clientIds.has(r.clientId))
+      if (active) setLedger(recs)
+    }
+    void load()
+    return () => {
+      active = false
+    }
+  }, [snapshot, scope, appliedIds, dismissed])
 
   return (
     <div className="space-y-6">
@@ -161,33 +181,31 @@ export function Recommendations() {
           )}
         </div>
 
-        {/* applied activity */}
+        {/* Decision ledger (persisted, mode-segregated). Survives reload; scoped to
+            this view. Each entry opens the entity drawer. */}
         <aside className="space-y-3">
           <div className="card overflow-hidden">
             <div className="flex items-center gap-2 border-b border-line px-4 py-3">
               <History className="h-4 w-4 text-ink-subtle" />
-              <SectionHeader title="Activity" />
+              <SectionHeader title="Activity" subtitle="Applied / dismissed — persists across reloads" />
             </div>
             <div className="max-h-[60vh] min-h-[280px] space-y-2 overflow-y-auto p-3">
-              {applied.length ? (
-                applied.map((a) => (
-                  <div key={a.id} className="rounded-lg border border-line bg-surface-2 p-2.5">
-                    <div className="flex items-start gap-2">
-                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
-                      <div className="min-w-0">
-                        <div className="truncate text-xs font-medium text-ink">{a.title}</div>
-                        <div className="mt-0.5 text-2xs text-ink-subtle">{a.message}</div>
-                      </div>
-                    </div>
-                  </div>
+              {ledger && ledger.length ? (
+                ledger.map((r) => (
+                  <ActivityRow
+                    key={r.id}
+                    rec={r}
+                    name={entityDisplayName(snapshot, r.level, r.entityId) || r.entityId}
+                    onOpen={() => openDrawer({ level: r.level, entityId: r.entityId })}
+                  />
                 ))
               ) : (
                 <div className="flex h-full flex-col items-center justify-center gap-2 px-4 py-10 text-center">
                   <span className="grid h-10 w-10 place-items-center rounded-full bg-surface-3 text-ink-subtle">
                     <History className="h-5 w-5" />
                   </span>
-                  <div className="text-xs font-medium text-ink-muted">No actions yet</div>
-                  <div className="text-2xs leading-relaxed text-ink-subtle">Apply a recommendation to start your audit trail. Each change is logged here.</div>
+                  <div className="text-xs font-medium text-ink-muted">No decisions yet</div>
+                  <div className="text-2xs leading-relaxed text-ink-subtle">Apply or dismiss a recommendation to start your audit trail. Each decision is logged here and persists across reloads.</div>
                 </div>
               )}
             </div>
@@ -195,6 +213,43 @@ export function Recommendations() {
         </aside>
       </div>
     </div>
+  )
+}
+
+/** One persisted ledger entry in the Activity rail. Opens the entity drawer on click.
+ *  Demo outcomes are strictly pending — no realized trajectory exists (firewall). */
+function ActivityRow({ rec, name, onOpen }: { rec: DecisionRecord; name: string; onOpen: () => void }) {
+  const applied = rec.action === 'applied'
+  return (
+    <button
+      onClick={onOpen}
+      className="w-full rounded-lg border border-line bg-surface-2 p-2.5 text-left transition-colors hover:border-line-strong focus-ring"
+    >
+      <div className="flex items-start gap-2">
+        {applied ? (
+          <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />
+        ) : (
+          <MinusCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-subtle" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium capitalize text-ink">{rec.action}</span>
+            <span className="truncate text-2xs text-ink-subtle">{SUGGESTION_TYPE_LABEL[rec.suggestionType]}</span>
+            <span className="ml-auto shrink-0 text-2xs tabular-nums text-ink-subtle">{fmtDateTime(rec.decidedAt)}</span>
+          </div>
+          <div className="mt-0.5 truncate text-2xs text-ink-muted">{name}</div>
+          <div className="mt-1 text-2xs">
+            {rec.outcome == null ? (
+              <span className="inline-flex items-center gap-1 italic text-ink-subtle">
+                <Clock className="h-3 w-3 shrink-0" /> Outcome: pending
+              </span>
+            ) : (
+              <span className="text-ink-muted">Outcome: {rec.outcome.verdict} (correlational)</span>
+            )}
+          </div>
+        </div>
+      </div>
+    </button>
   )
 }
 

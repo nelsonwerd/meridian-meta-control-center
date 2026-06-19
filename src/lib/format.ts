@@ -1,5 +1,7 @@
 /* Number / currency / percent formatting. Tabular-friendly, compact where useful. */
 
+import type { SuggestionType } from './types'
+
 export function fmtCurrency(v: number, opts: { compact?: boolean; decimals?: number; currency?: string } = {}): string {
   const { compact = false, decimals, currency = 'USD' } = opts
   if (!isFinite(v)) return '—'
@@ -105,4 +107,28 @@ export const KPI_LABELS: Record<string, string> = {
 
 export const KPI_UNITS: Record<string, string> = {
   cpa: '$', cpc: '$', cpm: '$', aov: '$', ctr: '%', cvr: '%', hookRate: '%', holdRate: '%',
+}
+
+/** Short, human label per suggestion type — for compact audit-trail rows (the decision
+ *  ledger drawer + Activity panel), which store only the type, not the full title. */
+export const SUGGESTION_TYPE_LABEL: Record<SuggestionType, string> = {
+  SCALE_BUDGET: 'Scale budget',
+  CUT_BUDGET: 'Cut budget',
+  PAUSE_ENTITY: 'Pause',
+  CREATIVE_FATIGUE: 'Creative fatigue',
+  CONSOLIDATE_ADSETS: 'Consolidate ad sets',
+  REALLOCATE_SPEND: 'Reallocate spend',
+  NEW_CREATIVE_ANGLE: 'New creative angle',
+  FIX_LANDING_OFFER: 'Fix landing / offer',
+  EXPAND_AUDIENCE: 'Expand audience',
+  PACING_ALERT: 'Pacing alert',
+  ANOMALY: 'Anomaly',
+  WATCH: 'Watch',
+}
+
+/** Compact local date-time for audit rows, e.g. "Jun 18, 2:34 PM". */
+export function fmtDateTime(iso: string): string {
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }

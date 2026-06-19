@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { History, X } from 'lucide-react'
-import { useStore } from '../../app/store'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { CheckCircle2, Clock, History, MinusCircle, X } from 'lucide-react'
+import { historyStore, useStore } from '../../app/store'
 import { useSnapshot } from '../../app/hooks'
 import { KpiRow } from '../blocks/KpiRow'
 import { PerformanceTrendCard } from '../blocks/PerformanceTrendCard'
@@ -11,8 +11,9 @@ import { adIdsForEntity, insightsForAdIds, metricsForEntity, parentPath } from '
 import { previousRange, timeseries } from '../../lib/metrics'
 import { analyzeClient } from '../../lib/ai/engine'
 import { creativePerformance } from '../../lib/ai/creative'
-import { fmtCurrency } from '../../lib/format'
+import { fmtCurrency, fmtDateTime, SUGGESTION_TYPE_LABEL } from '../../lib/format'
 import { cn } from '../../lib/cn'
+import type { DecisionRecord } from '../../lib/history'
 import type { EntityLevel, EntityRef, EntityStatus } from '../../lib/types'
 import type { Snapshot } from '../../lib/provider'
 
@@ -68,6 +69,33 @@ function DrawerInner({ entityRef, snapshot, onClose }: { entityRef: EntityRef; s
       prevFocused?.focus?.()
     }
   }, [onClose])
+
+  // Decision history — async at the seam (never the sync engine path). Reads the
+  // persisted, mode-segregated ledger for this entity (ad → itself; client → the
+  // client; ad set / campaign → the whole subtree). Re-runs on apply/dismiss.
+  const [history, setHistory] = useState<DecisionRecord[] | null>(null)
+  useEffect(() => {
+    let active = true
+    const load = async () => {
+      const { level, entityId } = entityRef
+      let recs: DecisionRecord[]
+      if (level === 'ad') {
+        recs = await historyStore.forEntity(entityId)
+      } else if (level === 'client' || level === 'account') {
+        const resolved = resolveEntity(snapshot, entityRef)
+        recs = resolved ? await historyStore.forClient(resolved.clientId) : []
+      } else {
+        const ids = subtreeIds(snapshot, entityRef)
+        const everything = await historyStore.all()
+        recs = ids ? everything.filter((r) => ids.has(r.entityId)) : everything
+      }
+      if (active) setHistory(recs)
+    }
+    void load()
+    return () => {
+      active = false
+    }
+  }, [entityRef, snapshot, applied, dismissed])
 
   const data = useMemo(() => {
     const { level, entityId } = entityRef
@@ -170,20 +198,67 @@ function DrawerInner({ entityRef, snapshot, onClose }: { entityRef: EntityRef; s
             </div>
           </div>
 
-          {/* History — Wave 3 wires the persisted Decision & Outcome Ledger here. */}
+          {/* Decision history — the persisted, mode-segregated Decision & Outcome
+              Ledger (Wave 3). Demo outcomes are strictly pending (no real trajectory). */}
           <div>
             <SectionHeader title="Decision history" subtitle="Applied / dismissed actions + outcomes" />
-            <div className="mt-3 flex flex-col items-center gap-2 rounded-xl border border-dashed border-line bg-surface/40 px-6 py-8 text-center">
-              <span className="grid h-9 w-9 place-items-center rounded-full bg-surface-3 text-ink-subtle">
-                <History className="h-4 w-4" />
-              </span>
-              <div className="text-xs font-medium text-ink-muted">No recorded decisions yet</div>
-              <div className="max-w-xs text-2xs leading-relaxed text-ink-subtle">
-                Once the decision ledger is wired, every applied/dismissed action and its measured outcome appears here.
-              </div>
+            <div className="mt-3 space-y-2">
+              {history === null ? (
+                <div className="rounded-xl border border-dashed border-line bg-surface/40 px-4 py-5 text-center text-2xs text-ink-subtle">
+                  Loading history…
+                </div>
+              ) : history.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed border-line bg-surface/40 px-6 py-8 text-center">
+                  <span className="grid h-9 w-9 place-items-center rounded-full bg-surface-3 text-ink-subtle">
+                    <History className="h-4 w-4" />
+                  </span>
+                  <div className="text-xs font-medium text-ink-muted">No recorded decisions yet</div>
+                  <div className="max-w-xs text-2xs leading-relaxed text-ink-subtle">
+                    Every applied or dismissed action for this {LEVEL_LABEL[entityRef.level].toLowerCase()} is logged here, with its measured outcome once live data accrues.
+                  </div>
+                </div>
+              ) : (
+                history.map((r) => <DecisionRow key={r.id} rec={r} />)
+              )}
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+/** One ledger entry: the action, when, the pre-action 7d snapshot, and the outcome.
+ *  In demo the outcome is always pending — no realized trajectory exists (firewall).
+ *  A realized outcome (live only) is shown as a correlational signal, never causal. */
+function DecisionRow({ rec }: { rec: DecisionRecord }) {
+  const applied = rec.action === 'applied'
+  return (
+    <div className="rounded-lg border border-line bg-surface-2 p-2.5">
+      <div className="flex items-center gap-2">
+        {applied ? (
+          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-success" />
+        ) : (
+          <MinusCircle className="h-3.5 w-3.5 shrink-0 text-ink-subtle" />
+        )}
+        <span className="text-xs font-medium capitalize text-ink">{rec.action}</span>
+        <span className="truncate text-2xs text-ink-subtle">{SUGGESTION_TYPE_LABEL[rec.suggestionType]}</span>
+        <span className="ml-auto shrink-0 text-2xs tabular-nums text-ink-subtle">{fmtDateTime(rec.decidedAt)}</span>
+      </div>
+      <div className="mt-1.5 text-2xs tabular-nums text-ink-subtle">
+        At decision · CPA {fmtCurrency(rec.preMetrics.cpa, { decimals: 2 })} · spend {fmtCurrency(rec.preMetrics.spend, { compact: true })} · ROAS {rec.preMetrics.roas.toFixed(2)}×
+      </div>
+      <div className="mt-1 text-2xs">
+        {rec.outcome == null ? (
+          <span className="inline-flex items-center gap-1 italic text-ink-subtle">
+            <Clock className="h-3 w-3 shrink-0" />
+            Outcome: pending — measured on live data over elapsed time
+          </span>
+        ) : (
+          <span className="text-ink-muted">
+            Outcome ({rec.outcome.verdict}): CPA {fmtCurrency(rec.outcome.cpa, { decimals: 2 })} · ROAS {rec.outcome.roas.toFixed(2)}× — correlational, not causal
+          </span>
+        )}
       </div>
     </div>
   )
