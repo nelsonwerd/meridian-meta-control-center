@@ -1,28 +1,91 @@
 import { Fragment, useEffect, useState } from 'react'
-import { AlertTriangle, CheckCircle2, ChevronDown, Cpu, KeyRound, Plug, RefreshCw, RotateCcw, Sliders, Workflow } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronDown, Cpu, Minus, Plug, Plus, RefreshCw, RotateCcw, ServerCog, Sliders, Workflow } from 'lucide-react'
 import { PageHeader } from '../components/blocks/PageHeader'
-import { Avatar, Chip, SectionHeader, Segmented } from '../components/ui/primitives'
+import { Avatar, SectionHeader, Segmented } from '../components/ui/primitives'
 import { useSnapshot } from '../app/hooks'
 import { useStore } from '../app/store'
 import { createProvider, getProviderMode, type ProviderMode } from '../lib/provider'
-import { API_VERSION, saveLiveConfig, type LiveConfig } from '../lib/provider/liveProvider'
+import { API_VERSION, loadLiveConfig, saveLiveConfig, type LiveConfig } from '../lib/provider/liveProvider'
+import { ensureClientCosmetics } from '../lib/provider/liveMap'
 import { WINDOW_DAYS } from '../lib/demo/generate'
-import { NARRATIVE_MODEL, PROXY_ENDPOINT, STRATEGY_MODEL, USE_LLM } from '../lib/ai/llm'
+import { isLlmEnabled, NARRATIVE_MODEL, PROXY_ENDPOINT, setLlmEnabled, STRATEGY_MODEL } from '../lib/ai/llm'
 import { EDITABLE_THRESHOLDS, THRESHOLDS, effectiveThresholds, type Preset } from '../lib/ai/thresholds'
 import { breakevenRoas } from '../lib/metrics'
 import { fmtRoas } from '../lib/format'
 import type { ClientConfig } from '../lib/config'
 import { cn } from '../lib/cn'
 
+/** One editable row of the live account mapping. All non-secret: the Graph
+ *  token NEVER passes through the browser — it lives in the proxy's env. */
+interface LiveRow {
+  clientId: string
+  clientName: string
+  adAccountId: string
+  businessId: string
+  businessName: string
+  businessType: 'agency' | 'partner'
+  purchaseActionType: string
+}
+
+function initialRows(snapshot: ReturnType<typeof useSnapshot> & object): LiveRow[] {
+  const saved = loadLiveConfig()
+  if (saved && saved.accounts.length > 0) {
+    return saved.accounts.map((a) => ({
+      clientId: a.clientId,
+      clientName: saved.clients.find((c) => c.id === a.clientId)?.name ?? a.clientId,
+      adAccountId: a.adAccountId,
+      businessId: a.businessId,
+      businessName: a.businessName ?? '',
+      businessType: a.businessType ?? 'agency',
+      purchaseActionType: a.purchaseActionType ?? '',
+    }))
+  }
+  // Template seeded from the demo roster — PLACEHOLDER ids the operator must
+  // replace with real act_/business ids before live mode can connect.
+  return snapshot.clients.map((c) => ({
+    clientId: c.id,
+    clientName: c.name,
+    adAccountId: '',
+    businessId: '',
+    businessName: snapshot.businessManagers.find((b) => b.id === c.bmId)?.name ?? '',
+    businessType: snapshot.businessManagers.find((b) => b.id === c.bmId)?.type ?? 'agency',
+    purchaseActionType: '',
+  }))
+}
+
 export function SettingsScreen() {
   const snapshot = useSnapshot()!
   const setThreshold = useStore((s) => s.setThreshold)
   const resetThresholds = useStore((s) => s.resetThresholds)
   const applyProviderMode = useStore((s) => s.applyProviderMode)
+  const pushToast = useStore((s) => s.pushToast)
   const [mode, setMode] = useState<ProviderMode>(getProviderMode())
-  const [token, setToken] = useState('')
+  const [rows, setRows] = useState<LiveRow[]>(() => initialRows(snapshot))
+  const [windowDays, setWindowDays] = useState<number>(() => loadLiveConfig()?.windowDays ?? WINDOW_DAYS)
+  const [llmOn, setLlmOn] = useState(isLlmEnabled())
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; detail: string } | null>(null)
+  const [proxyResult, setProxyResult] = useState<{ ok: boolean; detail: string } | null>(null)
+  const [proxyTesting, setProxyTesting] = useState(false)
+
+  /** Probe the backend token proxy (server/proxy.mjs → /healthz → Graph /me).
+   *  This is the credential check now — the browser never holds a token. */
+  const checkProxy = async () => {
+    setProxyTesting(true)
+    setProxyResult(null)
+    try {
+      const res = await fetch('/healthz')
+      const body = (await res.json()) as { ok?: boolean; name?: string; error?: string }
+      setProxyResult(
+        body.ok
+          ? { ok: true, detail: `Proxy up · Meta token valid — authenticated as ${body.name}.` }
+          : { ok: false, detail: body.error ?? `Proxy responded ${res.status}.` },
+      )
+    } catch {
+      setProxyResult({ ok: false, detail: 'Proxy unreachable — start it with `npm run proxy` (docs/META_INTEGRATION.md §5).' })
+    }
+    setProxyTesting(false)
+  }
 
   const test = async () => {
     setTesting(true)
@@ -32,27 +95,44 @@ export function SettingsScreen() {
     setTesting(false)
   }
 
-  const apply = () => {
-    if (mode === 'live') {
-      // Persist the non-secret account MAPPING template (client → ad account → BM)
-      // so live mode has a config to attempt. The Graph token is NOT stored from the
-      // browser (docs/META_INTEGRATION.md) — supply it server-side via the proxy.
-      const cfg: LiveConfig = {
-        accounts: snapshot.clients.map((c) => ({
-          clientId: c.id,
-          adAccountId: snapshot.accountByClient.get(c.id)?.id ?? '',
-          businessId: snapshot.businessManagers.find((b) => b.id === c.bmId)?.metaBusinessId ?? '',
-        })),
-        // snapshot.clients already carry per-client overrides from ConfigStore (the
-        // single editable home), so this is a DERIVED projection at save time — not a
-        // second target home. The live provider reads ConfigStore directly when wired.
-        clients: snapshot.clients,
-        windowDays: WINDOW_DAYS,
-      }
-      saveLiveConfig(cfg)
+  const saveMapping = () => {
+    const prior = loadLiveConfig()
+    const today = new Date().toISOString().slice(0, 10)
+    const cfg: LiveConfig = {
+      accounts: rows.map((r) => ({
+        clientId: r.clientId,
+        adAccountId: r.adAccountId.trim(),
+        businessId: r.businessId.trim(),
+        businessName: r.businessName.trim() || undefined,
+        businessType: r.businessType,
+        purchaseActionType: r.purchaseActionType.trim() || undefined,
+      })),
+      // Client business inputs (targets/AOV/margin) keep their single editable
+      // home (Targets & tuning below + ConfigStore); here we carry the roster
+      // with names, merging any previously-saved or demo-known client rows.
+      clients: rows.map((r) => {
+        const known = prior?.clients.find((c) => c.id === r.clientId) ?? snapshot.clientById.get(r.clientId)
+        return ensureClientCosmetics({ ...(known ?? {}), id: r.clientId, name: r.clientName || r.clientId }, today, windowDays, known?.currency ?? 'USD')
+      }),
+      windowDays,
     }
+    saveLiveConfig(cfg)
+    pushToast('success', 'Live mapping saved. Flip to Live (or reload) to use it.')
+  }
+
+  const apply = () => {
+    if (mode === 'live') saveMapping()
     void applyProviderMode(mode)
   }
+
+  const updateRow = (i: number, patch: Partial<LiveRow>) => {
+    setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r)))
+  }
+  const addRow = () => {
+    const n = rows.length + 1
+    setRows((rs) => [...rs, { clientId: `client_${n}`, clientName: `Client ${n}`, adAccountId: '', businessId: '', businessName: '', businessType: 'agency', purchaseActionType: '' }])
+  }
+  const removeRow = (i: number) => setRows((rs) => rs.filter((_, idx) => idx !== i))
 
   const dirty = mode !== getProviderMode()
 
@@ -86,22 +166,29 @@ export function SettingsScreen() {
         {mode === 'live' && (
           <div className="mt-4 space-y-3 rounded-xl border border-line bg-surface-2 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-ink">
-              <KeyRound className="h-4 w-4 text-ink-subtle" /> System-user access token
+              <ServerCog className="h-4 w-4 text-ink-subtle" /> Backend token proxy
             </div>
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="EAAB… (set in your deployment's secret store, not here in production)"
-              className="input font-mono text-xs"
-            />
             <p className="text-2xs leading-relaxed text-ink-subtle">
-              One agency System User token fans out across every client — including clients on their own Business Managers via Partner access.
-              In production, store this server-side; the browser never holds it. See <span className="font-mono text-ink">docs/META_INTEGRATION.md</span>.
+              The browser never holds a Meta token. All Graph traffic goes through the proxy
+              (<span className="font-mono text-ink">npm run proxy</span>), which reads{' '}
+              <span className="font-mono text-ink">META_SYSTEM_TOKEN</span> (and optional per-business{' '}
+              <span className="font-mono text-ink">META_TOKENS</span>) from its environment.
+              Setup: <span className="font-mono text-ink">docs/META_INTEGRATION.md</span>.
             </p>
-            <button onClick={test} disabled={testing} className="btn-outline py-1.5 text-xs">
-              <Plug className="h-3.5 w-3.5" /> {testing ? 'Testing…' : 'Test connection'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button onClick={checkProxy} disabled={proxyTesting} className="btn-outline py-1.5 text-xs">
+                <ServerCog className="h-3.5 w-3.5" /> {proxyTesting ? 'Checking…' : 'Check proxy & token'}
+              </button>
+              <button onClick={test} disabled={testing} className="btn-outline py-1.5 text-xs">
+                <Plug className="h-3.5 w-3.5" /> {testing ? 'Testing…' : 'Test Meta connection'}
+              </button>
+            </div>
+            {proxyResult && (
+              <div className={cn('flex items-start gap-2 rounded-lg p-2.5 text-xs', proxyResult.ok ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning')}>
+                {proxyResult.ok ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />}
+                {proxyResult.detail}
+              </div>
+            )}
             {result && (
               <div className={cn('flex items-start gap-2 rounded-lg p-2.5 text-xs', result.ok ? 'bg-success/10 text-success' : 'bg-warning/10 text-warning')}>
                 {result.ok ? <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> : <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />}
@@ -119,9 +206,9 @@ export function SettingsScreen() {
           {[
             'Create the Meta app + System User (agency BM)',
             'Accept Partner access for client-owned BMs',
-            'Map clients → ad accounts below',
-            'Stand up a backend token proxy',
-            'Finish LiveProvider structure mapping (last-mile)',
+            'Start the proxy with META_SYSTEM_TOKEN (npm run proxy)',
+            'Enter real act_/business ids below & save the mapping',
+            'Check proxy & test the Meta connection',
             'Flip to Live & reload',
           ].map((step, i) => (
             <li key={i} className="flex items-start gap-2.5 text-ink-muted">
@@ -136,49 +223,129 @@ export function SettingsScreen() {
       </aside>
       </div>
 
-      {/* Ad account mapping */}
+      {/* Live ad account mapping — EDITABLE (the live provider reads exactly this) */}
       <section className="card overflow-hidden">
         <div className="border-b border-line px-6 py-4">
-          <SectionHeader eyebrow="Multi-BM" title="Ad account mapping" subtitle="Each client maps to a Meta ad account under a business manager." />
+          <SectionHeader
+            eyebrow="Multi-BM"
+            title="Live ad account mapping"
+            subtitle="Real Meta ids for live mode: each client's act_ ad account + business manager id. Saved locally; tokens stay server-side in the proxy."
+            action={
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+                  Window
+                  <input
+                    type="number"
+                    min={7}
+                    max={365}
+                    value={windowDays}
+                    onChange={(e) => {
+                      const v = Number(e.target.value)
+                      if (Number.isFinite(v) && v >= 7 && v <= 365) setWindowDays(v)
+                    }}
+                    className="input w-16 px-2 py-1 text-xs tabular-nums"
+                  />
+                  days
+                </label>
+                <button onClick={addRow} className="btn-ghost py-1.5 text-xs">
+                  <Plus className="h-3.5 w-3.5" /> Add client
+                </button>
+                <button onClick={saveMapping} className="btn-outline py-1.5 text-xs">
+                  Save mapping
+                </button>
+              </div>
+            }
+          />
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-line text-left text-2xs uppercase tracking-wide text-ink-subtle">
                 <th className="px-6 py-2.5 font-medium">Client</th>
-                <th className="px-3 py-2.5 font-medium">Business manager</th>
                 <th className="px-3 py-2.5 font-medium">Ad account ID</th>
+                <th className="px-3 py-2.5 font-medium">Business ID</th>
+                <th className="px-3 py-2.5 font-medium">Business name</th>
+                <th className="px-3 py-2.5 font-medium">BM type</th>
+                <th className="px-3 py-2.5 font-medium">Purchase event</th>
+                <th className="px-3 py-2.5" />
               </tr>
             </thead>
             <tbody>
-              {snapshot.clients.map((c) => {
-                const acct = snapshot.accountByClient.get(c.id)
-                const bm = snapshot.businessManagers.find((b) => b.id === c.bmId)
+              {rows.map((r, i) => {
+                const known = snapshot.clientById.get(r.clientId)
                 return (
-                  <tr key={c.id} className="border-b border-line/60 last:border-0">
-                    <td className="px-6 py-2.5">
+                  <tr key={r.clientId + i} className="border-b border-line/60 last:border-0">
+                    <td className="px-6 py-2">
                       <div className="flex items-center gap-2.5">
-                        <Avatar monogram={c.monogram} color={c.accentColor} size={26} />
-                        <span className="font-medium text-ink">{c.name}</span>
+                        {known && <Avatar monogram={known.monogram} color={known.accentColor} size={26} />}
+                        <input value={r.clientName} onChange={(e) => updateRow(i, { clientName: e.target.value })} className="input w-36 px-2 py-1 text-xs" />
                       </div>
                     </td>
-                    <td className="px-3 py-2.5">
-                      <Chip tone={bm?.type === 'agency' ? 'brand' : 'info'} className="px-2 py-0.5 text-2xs">{bm?.name}</Chip>
+                    <td className="px-3 py-2">
+                      <input value={r.adAccountId} onChange={(e) => updateRow(i, { adAccountId: e.target.value })} placeholder="act_1234567890" className="input w-36 px-2 py-1 font-mono text-xs" />
                     </td>
-                    <td className="px-3 py-2.5 font-mono text-xs text-ink-muted">{acct?.id}</td>
+                    <td className="px-3 py-2">
+                      <input value={r.businessId} onChange={(e) => updateRow(i, { businessId: e.target.value })} placeholder="123456789012345" className="input w-32 px-2 py-1 font-mono text-xs" />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input value={r.businessName} onChange={(e) => updateRow(i, { businessName: e.target.value })} placeholder="Agency BM" className="input w-32 px-2 py-1 text-xs" />
+                    </td>
+                    <td className="px-3 py-2">
+                      <Segmented<'agency' | 'partner'>
+                        size="sm"
+                        value={r.businessType}
+                        onChange={(t) => updateRow(i, { businessType: t })}
+                        options={[
+                          { value: 'agency', label: 'Agency' },
+                          { value: 'partner', label: 'Partner' },
+                        ]}
+                      />
+                    </td>
+                    <td className="px-3 py-2">
+                      <input value={r.purchaseActionType} onChange={(e) => updateRow(i, { purchaseActionType: e.target.value })} placeholder="omni_purchase" className="input w-36 px-2 py-1 font-mono text-xs" />
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <button onClick={() => removeRow(i)} aria-label="Remove client row" className="rounded-md p-1 text-ink-subtle hover:bg-surface-3 hover:text-ink">
+                        <Minus className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
         </div>
+        <p className="border-t border-line px-6 py-3 text-2xs leading-relaxed text-ink-subtle">
+          Partner-BM clients resolve their own token server-side via <span className="font-mono">META_TOKENS</span> keyed by business id;
+          everything else uses the agency system-user token. Purchase event defaults to <span className="font-mono">omni_purchase</span>{' '}
+          (pixel-only accounts: <span className="font-mono">offsite_conversion.fct.purchase</span>).
+        </p>
       </section>
 
       <TargetsEditor />
 
       {/* AI analyst */}
       <section className="card p-6">
-        <SectionHeader eyebrow="Intelligence" title="AI analyst" subtitle="Heuristics run with zero keys; an LLM enriches the narrative when a proxy is wired." />
+        <SectionHeader
+          eyebrow="Intelligence"
+          title="AI analyst"
+          subtitle="Heuristics run with zero keys. LLM enrichment adds client-ready prose via the proxy (ANTHROPIC_API_KEY server-side) — it never changes the math."
+          action={
+            <Segmented<'on' | 'off'>
+              size="sm"
+              value={llmOn ? 'on' : 'off'}
+              onChange={(v) => {
+                const on = v === 'on'
+                setLlmEnabled(on)
+                setLlmOn(on)
+              }}
+              options={[
+                { value: 'off', label: 'Heuristics only' },
+                { value: 'on', label: 'LLM enriched' },
+              ]}
+            />
+          }
+        />
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <Field icon={<Cpu className="h-4 w-4" />} label="Narrative model" value={NARRATIVE_MODEL} />
           <Field icon={<Cpu className="h-4 w-4" />} label="Weekly strategy model" value={STRATEGY_MODEL} />
@@ -186,8 +353,8 @@ export function SettingsScreen() {
           <Field
             icon={<Plug className="h-4 w-4" />}
             label="LLM enrichment"
-            value={USE_LLM ? 'Enabled' : 'Scaffolded (needs proxy)'}
-            tone={USE_LLM ? 'text-success' : 'text-warning'}
+            value={llmOn ? 'Enabled — needs proxy + key' : 'Off (heuristics only)'}
+            tone={llmOn ? 'text-success' : undefined}
           />
         </div>
       </section>

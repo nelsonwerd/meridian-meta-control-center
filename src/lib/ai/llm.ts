@@ -1,27 +1,46 @@
 import type { MetricsBundle, Suggestion } from '../types'
 
 /* ============================================================================
-   LLM narrative layer — SCAFFOLD.
+   LLM narrative layer.
 
    The numeric judgement (scale/cut/fatigue/etc.) is deterministic and lives in
    ai/engine.ts — it works with zero API keys. This layer is the OPTIONAL
-   enrichment the operator asked for: a Claude model turning the structured
-   findings into sharper, client-ready prose, and pressure-testing the numbers.
+   enrichment: a Claude model turning the structured findings into sharper,
+   client-ready prose. The math is never LLM-derived.
 
-   It is NOT wired in this build: calling Anthropic from the browser would leak
-   the key + hit CORS, so it must go through a tiny backend proxy. The prompt and
-   request shape are ready; drop in the endpoint (docs/META_INTEGRATION.md →
-   "AI narrative") and flip USE_LLM. Until then, callers use the heuristic prose.
+   Transport: the browser POSTs to the backend proxy (server/proxy.mjs →
+   /api/ai/narrate), which holds ANTHROPIC_API_KEY server-side and forwards to
+   the Anthropic Messages API. Without the key (or with enrichment toggled
+   off), narrate() returns null and every caller falls back to the heuristic
+   prose — graceful, honest degradation.
    ========================================================================== */
 
-// Latest models (knowledge cutoff Jan 2026). Sonnet is the cost/latency-balanced
-// default for narrative; Opus for the deepest weekly strategic read.
-export const NARRATIVE_MODEL = 'claude-sonnet-4-6'
-export const STRATEGY_MODEL = 'claude-opus-4-8'
+// Current Claude models (verified 2026-08-11). Sonnet 5 is the cost/latency-
+// balanced default for narrative; Opus 5 for the deepest weekly strategy read.
+export const NARRATIVE_MODEL = 'claude-sonnet-5'
+export const STRATEGY_MODEL = 'claude-opus-5'
 
-/** Flip to true once a backend proxy at PROXY_ENDPOINT is live. */
-export const USE_LLM = false
 export const PROXY_ENDPOINT = '/api/ai/narrate'
+
+/** Operator toggle (Settings → AI analyst). Off by default: heuristics carry
+ *  the product; enrichment is opt-in and requires the proxy + an Anthropic key. */
+const LLM_ENABLED_KEY = 'meridian.llm.enabled'
+
+export function isLlmEnabled(): boolean {
+  try {
+    return localStorage.getItem(LLM_ENABLED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function setLlmEnabled(on: boolean) {
+  try {
+    localStorage.setItem(LLM_ENABLED_KEY, on ? '1' : '0')
+  } catch {
+    /* storage unavailable — stays off */
+  }
+}
 
 export interface NarrativeContext {
   scope: string
@@ -68,7 +87,7 @@ export function buildNarrativePrompt(ctx: NarrativeContext): { system: string; u
 /** Enrich findings with an LLM narrative. Returns null when not configured so
  *  callers fall back to the heuristic prose (graceful, honest degradation). */
 export async function narrate(ctx: NarrativeContext): Promise<string | null> {
-  if (!USE_LLM) return null
+  if (!isLlmEnabled()) return null
   try {
     const { system, user } = buildNarrativePrompt(ctx)
     const res = await fetch(PROXY_ENDPOINT, {

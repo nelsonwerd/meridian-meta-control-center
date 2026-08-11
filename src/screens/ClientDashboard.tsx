@@ -5,6 +5,7 @@ import { PageHeader } from '../components/blocks/PageHeader'
 import { KpiRow } from '../components/blocks/KpiRow'
 import { PerformanceTrendCard } from '../components/blocks/PerformanceTrendCard'
 import { SuggestionCard } from '../components/blocks/SuggestionCard'
+import { AiNarrative } from '../components/blocks/AiNarrative'
 import { CreativeThumb } from '../components/blocks/CreativeThumb'
 import { Avatar, Chip, EmptyState, ProgressRing, SectionHeader, StatusBadge } from '../components/ui/primitives'
 import { useSnapshot } from '../app/hooks'
@@ -82,6 +83,10 @@ export function ClientDashboard({ client }: { client: Client }) {
         keys={['spend', 'purchases', 'cpa', 'roas']}
         targets={{ cpa: client.targetCPA, roas: client.targetROAS }}
       />
+
+      {/* LLM-enriched analyst read — renders only when enrichment is enabled
+          AND the proxy answers; heuristics carry everything else (P6) */}
+      <AiNarrative client={client} metrics={data.current} previous={data.previous} suggestions={data.suggestions} rangeLabel={range.label} />
 
       {/* secondary stat strip */}
       <div className="card grid grid-cols-2 divide-line sm:grid-cols-3 lg:grid-cols-6 lg:divide-x">
