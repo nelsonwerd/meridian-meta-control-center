@@ -1,4 +1,4 @@
-import type { DateRange, Insight, ISODate, KpiDelta, MetricsBundle, RangePreset, TimeseriesPoint } from './types'
+import type { DateRange, Insight, ISODate, KpiDelta, MetricsBundle, PeriodKey, RangePreset, TimeseriesPoint } from './types'
 import { DATA_TODAY, WINDOW_DAYS } from './demo/generate'
 import { addDays, daysBetween } from './date'
 
@@ -187,6 +187,42 @@ export function previousRange(range: DateRange): DateRange {
 }
 
 export const earliestDate = (): ISODate => addDays(today(), -(dataWindowDays - 1))
+
+/** The {start,end} of each canonical period, anchored to today(). Mirrors
+ *  selectors.lastNDays semantics exactly (prev7 = the 7 days ending 7 days
+ *  ago, etc.). */
+export function periodBounds(key: PeriodKey): { start: ISODate; end: ISODate } {
+  const t = today()
+  switch (key) {
+    case '3d':
+      return { start: addDays(t, -2), end: t }
+    case '7d':
+      return { start: addDays(t, -6), end: t }
+    case '14d':
+      return { start: addDays(t, -13), end: t }
+    case '28d':
+      return { start: addDays(t, -27), end: t }
+    case 'prev7':
+      return { start: addDays(t, -13), end: addDays(t, -7) }
+    case 'prev14':
+      return { start: addDays(t, -27), end: addDays(t, -14) }
+    case 'full':
+      return { start: earliestDate(), end: t }
+  }
+}
+
+const PERIOD_KEYS: PeriodKey[] = ['3d', '7d', '14d', '28d', 'prev7', 'prev14', 'full']
+
+/** Which canonical period (if any) a range corresponds to — the key into the
+ *  live snapshot's true period-reach map. Null → no canonical match (custom /
+ *  mtd ranges keep the labelled additive approximation). */
+export function canonicalPeriodKey(range: DateRange): PeriodKey | null {
+  for (const key of PERIOD_KEYS) {
+    const b = periodBounds(key)
+    if (b.start === range.start && b.end === range.end) return key
+  }
+  return null
+}
 
 /* ----- formatting ----- */
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { LiveProvider, API_VERSION, type LiveConfig } from '../provider/liveProvider'
 import type { Snapshot } from '../provider/types'
 import { analyzeScope } from '../ai/engine'
+import { metricsForAdIds } from '../selectors'
 import { aggregate, filterByRange, makeRange, setDataContext } from '../metrics'
 import { DATA_TODAY, WINDOW_DAYS } from '../demo/generate'
 
@@ -101,13 +102,27 @@ const CFG: LiveConfig = {
   windowDays: WINDOW,
 }
 
-function graphResponse(pathname: string): unknown {
+/** TRUE de-duplicated period reach per ad (what a summary insights query —
+ *  no time_increment — returns). Deliberately much smaller than the additive
+ *  daily sum so the P4 override is observable: ad 7001's daily reach sums to
+ *  6000×7=42,000 over 7d while its true 7d reach is 18,000. */
+const PERIOD_REACH: Record<string, number> = { '7001': 18000, '7002': 15000, '7003': 4200 }
+
+function summaryReachRows() {
+  return { data: Object.entries(PERIOD_REACH).map(([ad_id, reach]) => ({ ad_id, reach: String(reach) })) }
+}
+
+function graphResponse(url: URL): unknown {
+  const pathname = url.pathname
   if (pathname.endsWith('/act_777')) return { id: 'act_777', name: 'Forge Athletics — Main', currency: 'USD', timezone_name: 'UTC' }
   if (pathname.endsWith('/act_777/campaigns')) return CAMPAIGNS
   if (pathname.endsWith('/act_777/adsets')) return ADSETS
   if (pathname.endsWith('/act_777/ads')) return ADS
   if (pathname.endsWith('/act_777/adcreatives')) return CREATIVES
-  if (pathname.endsWith('/act_777/insights')) return insightRows()
+  if (pathname.endsWith('/act_777/insights')) {
+    // daily pull carries time_increment=1; period-reach pulls are summary
+    return url.searchParams.get('time_increment') === '1' ? insightRows() : summaryReachRows()
+  }
   return { error: { message: `unexpected path ${pathname}` } }
 }
 
@@ -124,7 +139,7 @@ describe('LiveProvider.loadSnapshot — full pipeline against a fake Graph', () 
         businessHeader: (init?.headers as Record<string, string> | undefined)?.['X-Meta-Business-Id'] ?? null,
         hasToken: url.searchParams.has('access_token'),
       })
-      return new Response(JSON.stringify(graphResponse(url.pathname)), { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response(JSON.stringify(graphResponse(url)), { status: 200, headers: { 'content-type': 'application/json' } })
     })
     snapshot = await new LiveProvider(CFG).loadSnapshot()
     // Mirror what the store does on load: anchor all windows to this snapshot.
@@ -196,6 +211,17 @@ describe('LiveProvider.loadSnapshot — full pipeline against a fake Graph', () 
     expect(agg.spend).toBeCloseTo((180 + 95 + 40) * 7, 0)
     expect(agg.purchases).toBe((9 + 0 + 2) * 7)
     expect(agg.roas).toBeGreaterThan(0)
+  })
+
+  it('period frequency uses TRUE de-duplicated reach, not the daily-sum collapse (P4)', () => {
+    const m7 = metricsForAdIds(snapshot, ['7001'], makeRange('7d'))
+    // additive daily sum would be 6000×7 = 42,000 → freq ≈ 1.83; true period
+    // reach is 18,000 → freq = 77,000/18,000 ≈ 4.28
+    expect(m7.reach).toBe(18000)
+    expect(m7.frequency).toBeCloseTo((11000 * 7) / 18000, 2)
+    // non-canonical ranges keep the labelled additive approximation
+    const custom = metricsForAdIds(snapshot, ['7001'], { preset: 'custom', start: daysAgo(5), end: daysAgo(1), label: 'x' })
+    expect(custom.reach).toBe(6000 * 5)
   })
 
   it('the AI engine runs on the live snapshot and catches the seeded DOA burner', () => {

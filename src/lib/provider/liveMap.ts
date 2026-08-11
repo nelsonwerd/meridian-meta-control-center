@@ -16,6 +16,7 @@ import type {
   Insight,
   ISODate,
   OptimizationGoal,
+  PeriodKey,
 } from '../types'
 import { ANGLE_GRADIENTS } from '../demo/catalog'
 import type { LiveAccountConfig } from './liveProvider'
@@ -459,6 +460,39 @@ export function mapCreative(raw: RawCreative, ctx: MapContext, createdAtHint?: I
     batch: batchFromDate(createdAt, ctx.anchor),
     createdAt,
   }
+}
+
+/* --------------------------- period windows ------------------------------ */
+
+export const PERIOD_KEY_LIST: PeriodKey[] = ['3d', '7d', '14d', '28d', 'prev7', 'prev14', 'full']
+
+/** {since,until} for a canonical period against an explicit anchor — MUST
+ *  mirror metrics.periodBounds() (which reads the app-level anchor) so the
+ *  live pull's windows match the ranges the UI/engine request. */
+export function periodBoundsFor(key: PeriodKey, anchor: ISODate, windowDays: number): { start: ISODate; end: ISODate } {
+  const back = (n: number) => addDaysUtc(anchor, -n)
+  switch (key) {
+    case '3d':
+      return { start: back(2), end: anchor }
+    case '7d':
+      return { start: back(6), end: anchor }
+    case '14d':
+      return { start: back(13), end: anchor }
+    case '28d':
+      return { start: back(27), end: anchor }
+    case 'prev7':
+      return { start: back(13), end: back(7) }
+    case 'prev14':
+      return { start: back(27), end: back(14) }
+    case 'full':
+      return { start: back(windowDays - 1), end: anchor }
+  }
+}
+
+function addDaysUtc(iso: ISODate, days: number): ISODate {
+  const d = new Date(iso + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
 }
 
 /* ------------------------------- insights -------------------------------- */

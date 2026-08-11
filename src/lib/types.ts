@@ -208,6 +208,12 @@ export interface Insight {
   videoThruplays: number
 }
 
+/** The canonical windows the app scores/renders. Live mode pulls TRUE
+ *  de-duplicated reach per ad for each (summing daily reach re-counts the same
+ *  person every day and collapses frequency toward ~1); demo keeps its
+ *  labelled additive approximation. */
+export type PeriodKey = '3d' | '7d' | '14d' | '28d' | 'prev7' | 'prev14' | 'full'
+
 /* ----- Derived / computed shapes (produced by metrics.ts, not stored) ----- */
 
 /** A fully-derived KPI bundle for any entity over any window. */

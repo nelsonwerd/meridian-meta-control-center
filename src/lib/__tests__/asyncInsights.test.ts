@@ -92,6 +92,8 @@ describe('loadSnapshot picks sync vs async by window size', () => {
       const s = structure(url)
       if (s) return s
       if (url.pathname.endsWith('/act_9/insights') && init?.method === 'POST') return { body: { report_run_id: 'rr_1' } }
+      // period-reach summary pulls (P4) are sync GETs even on the async path
+      if (url.pathname.endsWith('/act_9/insights')) return { body: { data: [] } }
       if (url.pathname.endsWith('/rr_1')) return { body: { async_status: 'Job Completed' } }
       if (url.pathname.endsWith('/rr_1/insights')) return { body: { data: [] } }
       return { status: 404, body: {} }

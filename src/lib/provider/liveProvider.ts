@@ -16,14 +16,17 @@ import {
   mapCampaign,
   mapCreative,
   mapInsightRow,
+  periodBoundsFor,
   placeholderCreative,
   synthesizeBusinessManagers,
+  PERIOD_KEY_LIST,
   PURCHASE_ACTION,
   type RawAd,
   type RawAdSet,
   type RawCampaign,
   type RawCreative,
 } from './liveMap'
+import type { PeriodKey } from '../types'
 
 // Re-exported for existing importers (Settings, tests).
 export { PURCHASE_ACTION, PURCHASE_ACTION_FALLBACK, actionVal } from './liveMap'
@@ -346,6 +349,7 @@ export class LiveProvider implements DataProvider {
     // account anchors the whole snapshot; per-account insights windows still
     // use each account's own tz below).
     let anchor: string | null = null
+    const periodReachByAd = new Map<string, Partial<Record<PeriodKey, number>>>()
 
     for (const acct of cfg.accounts) {
       // Node read (not the edge-shaped graphGet) so we actually get the account
@@ -452,6 +456,31 @@ export class LiveProvider implements DataProvider {
       for (const r of adRows) {
         insights.push(mapInsightRow(r, acct.clientId, purchaseAction))
       }
+
+      // ---- TRUE period reach per ad (P4) ----
+      // A summary query (NO time_increment) returns ONE row per ad whose reach
+      // is de-duplicated over the whole time_range — the only correct way to
+      // get period frequency (daily reach must never be summed). One small
+      // pull per canonical window; unique metrics belong in separate calls per
+      // Meta's own best practice. Windows are anchored to the snapshot anchor
+      // so they match the ranges the UI/engine will request.
+      for (const key of PERIOD_KEY_LIST) {
+        const b = periodBoundsFor(key, anchor, cfg.windowDays)
+        const reachRows = await graphGet<{ ad_id: string; reach?: string }>(
+          `${acct.adAccountId}/insights`,
+          { level: 'ad', fields: 'ad_id,reach', time_range: JSON.stringify({ since: b.start, until: b.end }) },
+          acct.businessId,
+        )
+        for (const r of reachRows) {
+          if (!r.ad_id) continue
+          let entry = periodReachByAd.get(r.ad_id)
+          if (!entry) {
+            entry = {}
+            periodReachByAd.set(r.ad_id, entry)
+          }
+          entry[key] = Number(r.reach ?? 0)
+        }
+      }
     }
 
     // ---- clients + business managers (config-sourced, cosmetics ensured) ----
@@ -474,7 +503,7 @@ export class LiveProvider implements DataProvider {
 
     const ds = assembleDataset({ businessManagers, clients, accounts, campaigns, adSets, ads, creatives, insights })
     const dataAnchor = anchor ?? isoTodayInTz('UTC')
-    return { ...ds, mode: 'live', generatedAt: new Date().toISOString(), dataAnchor, windowDays: cfg.windowDays }
+    return { ...ds, periodReachByAd, mode: 'live', generatedAt: new Date().toISOString(), dataAnchor, windowDays: cfg.windowDays }
   }
 
   async applyAction(req: ActionRequest, snapshot: Snapshot): Promise<ActionResult> {

@@ -72,6 +72,12 @@ export interface Dataset {
   ads: Ad[]
   creatives: Creative[]
   insights: Insight[]
+  /** LIVE ONLY: true de-duplicated reach per ad per canonical window (from
+   *  summary insights pulls without time_increment). When present, the metrics
+   *  chokepoint overrides the additive reach sum for matching ranges so
+   *  frequency is real (the engine's fatigue/scale gates depend on it). Demo
+   *  omits it — its additive approximation is labelled and self-consistent. */
+  periodReachByAd?: Map<string, Partial<Record<import('../types').PeriodKey, number>>>
   // indexes
   clientById: Map<string, Client>
   accountByClient: Map<string, AdAccount>

@@ -1,6 +1,6 @@
 import type { Dataset } from './demo/generate'
 import type { DateRange, EntityLevel, Insight, MetricsBundle, Scope } from './types'
-import { addDays, aggregate, daysBetween, filterByRange, today } from './metrics'
+import { addDays, aggregate, canonicalPeriodKey, daysBetween, filterByRange, today } from './metrics'
 
 /* Pure resolution helpers: entity → its ad ids → insight rows → metrics. Used by
    both the screens and the AI engine so they always agree on the numbers. */
@@ -53,7 +53,39 @@ export function insightsForAdIds(ds: Dataset, adIds: string[]): Insight[] {
 }
 
 export function metricsForAdIds(ds: Dataset, adIds: string[], range: DateRange): MetricsBundle {
-  return aggregate(filterByRange(insightsForAdIds(ds, adIds), range))
+  const rows = filterByRange(insightsForAdIds(ds, adIds), range)
+  const bundle = aggregate(rows)
+
+  // LIVE reach correction: summing DAILY reach re-counts the same person every
+  // day, collapsing period frequency toward ~1.0 — which would blind the
+  // engine's fatigue gate and green-light the scale gate falsely. When the
+  // snapshot carries true de-duplicated period reach (live pulls it per
+  // canonical window) substitute it. Applied only when EVERY ad that delivered
+  // in-range has an entry, so mixed additive/true sums never blend. Reach
+  // summed ACROSS ads still over-counts cross-ad overlap — the same
+  // approximation Meta itself makes below account level; labelled in LEDGER.md.
+  if (ds.periodReachByAd && bundle.reach > 0) {
+    const key = canonicalPeriodKey(range)
+    if (key) {
+      let trueReach = 0
+      let allCovered = true
+      const delivered = new Set<string>()
+      for (const r of rows) delivered.add(r.adId)
+      for (const adId of delivered) {
+        const entry = ds.periodReachByAd.get(adId)?.[key]
+        if (entry == null) {
+          allCovered = false
+          break
+        }
+        trueReach += entry
+      }
+      if (allCovered && trueReach > 0) {
+        bundle.reach = trueReach
+        bundle.frequency = bundle.impressions / trueReach
+      }
+    }
+  }
+  return bundle
 }
 
 export function metricsForEntity(ds: Dataset, level: EntityLevel, id: string, range: DateRange): MetricsBundle {
