@@ -234,9 +234,85 @@ async function graphGetNode<T>(path: string, params: Record<string, string>, bus
   return node
 }
 
+/* ---------------------------------------------------------------------------
+   Async insight report jobs — for pulls a synchronous GET would time out on
+   (long windows × many ads). Flow per Meta's best-practices doc (verified
+   2026-08-11):
+     POST /act_{id}/insights (same params)      → { report_run_id }
+     GET  /{report_run_id}                      → poll async_status
+     GET  /{report_run_id}/insights             → the rows (paginated)
+   CRITICAL: gate on async_status === 'Job Completed' — NOT on
+   async_percent_completion, which can read 100 while the job is still
+   'Job Running'. 'Job Failed'/'Job Skipped' → throw with guidance (narrow the
+   window and retry). report_run_id expires after ~30 days — never persisted.
+   ------------------------------------------------------------------------- */
+
+/** Sync pulls comfortably handle a ~5-week window at daily ad grain; beyond
+ *  that we submit an async report job instead. */
+export const ASYNC_INSIGHTS_THRESHOLD_DAYS = 35
+
+export interface AsyncJobOpts {
+  /** initial poll delay; grows ×1.5 capped at 12× base (tests use ~1ms) */
+  baseDelayMs?: number
+  maxPolls?: number
+}
+
+interface ReportRun {
+  async_status?: string
+  async_percent_completion?: number
+}
+
+/** POST via the proxy (form-encoded, no token — the proxy injects it). */
+async function graphPost<T>(path: string, form: Record<string, string>, businessId?: string): Promise<T> {
+  const res = await fetch(`${apiBase()}/${API_VERSION}/${path}`, {
+    method: 'POST',
+    body: new URLSearchParams(form),
+    headers: routingHeaders(businessId),
+  })
+  const text = await res.text()
+  if (!res.ok) throw new Error(`Graph POST ${path} ${res.status}: ${text.slice(0, 300)}`)
+  return JSON.parse(text) as T
+}
+
+export async function runAsyncInsightsJob<T>(
+  actId: string,
+  params: Record<string, string>,
+  businessId?: string,
+  opts: AsyncJobOpts = {},
+): Promise<T[]> {
+  const baseDelay = opts.baseDelayMs ?? 5000
+  const maxPolls = opts.maxPolls ?? 60
+  const { report_run_id } = await graphPost<{ report_run_id?: string }>(`${actId}/insights`, params, businessId)
+  if (!report_run_id) throw new Error('Async insights job returned no report_run_id.')
+
+  let delay = baseDelay
+  for (let poll = 0; poll < maxPolls; poll++) {
+    await new Promise((r) => setTimeout(r, delay))
+    delay = Math.min(delay * 1.5, baseDelay * 12)
+    const run = await graphGetNode<ReportRun>(report_run_id, { fields: 'async_status,async_percent_completion' }, businessId)
+    const status = run.async_status ?? ''
+    if (status === 'Job Completed') {
+      return graphGet<T>(`${report_run_id}/insights`, {}, businessId)
+    }
+    if (status === 'Job Failed' || status === 'Job Skipped') {
+      throw new Error(
+        `Async insights job ${status.toLowerCase()} for ${actId} — narrow the time_range (or split by date) and retry.`,
+      )
+    }
+    // 'Job Not Started' | 'Job Started' | 'Job Running' → keep polling.
+    // NB: async_percent_completion can read 100 while still 'Job Running' —
+    // completion is ONLY the status string.
+  }
+  throw new Error(`Async insights job for ${actId} did not complete after ${maxPolls} polls — try a narrower window.`)
+}
+
 export class LiveProvider implements DataProvider {
   readonly mode = 'live' as const
-  constructor(private cfg: LiveConfig | null = loadLiveConfig()) {}
+  constructor(
+    private cfg: LiveConfig | null = loadLiveConfig(),
+    /** poll pacing for async insight jobs — injectable so tests run in ms */
+    private asyncOpts: AsyncJobOpts = {},
+  ) {}
 
   async checkConnection() {
     if (!this.cfg || this.cfg.accounts.length === 0) return { ok: false, detail: 'No accounts configured.' }
@@ -356,11 +432,23 @@ export class LiveProvider implements DataProvider {
       const since = isoDaysAgoInTz(timezone, cfg.windowDays - 1)
       const until = isoDaysAgoInTz(timezone, 0)
       const purchaseAction = acct.purchaseActionType || PURCHASE_ACTION
-      const adRows = await graphGet<any>(
-        `${acct.adAccountId}/insights`,
-        { level: 'ad', time_increment: '1', fields: `ad_id,${INSIGHT_FIELDS}`, time_range: JSON.stringify({ since, until }) },
-        acct.businessId,
-      )
+      // Attribution: we request NO custom action_attribution_windows — the
+      // default (7d-click + 1d-view) is what Ads Manager reports, and since
+      // 2025-06-10 Meta disregards the unified-attribution override params
+      // anyway. (7d_view/28d_view were removed 2026-01-12 and would return
+      // empty silently — never request them.)
+      const insightParams = {
+        level: 'ad',
+        time_increment: '1',
+        fields: `ad_id,${INSIGHT_FIELDS}`,
+        time_range: JSON.stringify({ since, until }),
+      }
+      // Long windows go through an async report job (a sync GET would time
+      // out); short pulls stay on the paginated sync path.
+      const adRows =
+        cfg.windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS
+          ? await runAsyncInsightsJob<any>(acct.adAccountId, insightParams, acct.businessId, this.asyncOpts)
+          : await graphGet<any>(`${acct.adAccountId}/insights`, insightParams, acct.businessId)
       for (const r of adRows) {
         insights.push(mapInsightRow(r, acct.clientId, purchaseAction))
       }
