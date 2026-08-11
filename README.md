@@ -2,11 +2,12 @@
 
 # Meridian
 
-**An internal AI command & control center for agency Meta advertising.**
+**An open-source AI command & control center for agency Meta advertising.**
 
 One cockpit across every client and Business Manager · KPI dashboards down to the
 creative · an AI analyst that scores the data and proposes one-click optimizations
-· designed weekly Monday reports.
+· designed weekly Monday reports · demo mode out of the box, live mode for your
+real ad accounts.
 
 <br />
 
@@ -16,7 +17,7 @@ creative · an AI analyst that scores the data and proposes one-click optimizati
 
 ---
 
-## Quick start
+## Quick start (demo — zero keys)
 
 ```bash
 npm install
@@ -28,9 +29,36 @@ Business Managers, ~26 campaigns and 90 days of ad-level performance — so you 
 poke around before any API is connected. No keys required.
 
 ```bash
-npm run build    # typecheck + production build
-npm run lint     # typecheck only
+npm run test:run # 134 tests, incl. a full fake-Graph live-pipeline run
+npm run build    # typecheck (app + server) + production build
+npm run lint     # eslint
 ```
+
+## Going live with your Meta account
+
+The live integration is **built end-to-end** (Graph API v26): a zero-dependency
+Node token proxy, full structure→domain mapping, async insight report jobs,
+true period reach/frequency for the AI engine, and guarded one-click writes.
+The short version:
+
+```bash
+# 1. terminal A — the token proxy holds your credentials; the browser never sees them
+META_SYSTEM_TOKEN=EAAB... npm run proxy
+
+# 2. terminal B — the app (dev server forwards /api to the proxy)
+npm run dev
+```
+
+3. In **Settings → Live ad account mapping**, enter each client's real `act_` ad
+   account id + business id, save, then **Check proxy & token** → flip to
+   **Live (Meta API)**.
+
+Prerequisites (Meta app, System User token, Partner access for client-owned BMs,
+multi-token routing, single-process production deploys, the optional Claude
+narrative layer) are in **[`docs/META_INTEGRATION.md`](docs/META_INTEGRATION.md)**
+— including the go-live checklist of checks only a real account can pass.
+Budget/pause writes always require an explicit in-app confirm and are never
+auto-run.
 
 ## What's inside
 
@@ -56,23 +84,31 @@ npm run lint     # typecheck only
 | <a href="docs/screenshots/weekly-report.png"><img src="docs/screenshots/weekly-report.png" alt="Weekly Reports — one designed Monday digest per client, with a written headline and week-over-week deltas" width="440"></a> | <a href="docs/screenshots/clients.png"><img src="docs/screenshots/clients.png" alt="Clients — the book of business grouped by Business Manager, each with a spend sparkline and KPIs" width="440"></a> |
 | **Weekly Reports** — a designed Monday digest per client, headline written from the data | **Clients** — the book of business, grouped by Business Manager |
 
-## Architecture (built to "turn the lights on")
+## Architecture
 
-The entire UI reads through one **`DataProvider`** seam. `DemoProvider` ships now;
-`LiveProvider` is a wired Meta Marketing API client scaffold. The **AI engine**
-(`src/lib/ai/`) runs on heuristics with zero keys; an LLM narrative layer is
-scaffolded. Switch demo → live in **Settings**; full wiring guide in
-[`docs/META_INTEGRATION.md`](docs/META_INTEGRATION.md).
+The entire UI reads through one **`DataProvider`** seam, and both providers are
+complete: `DemoProvider` serves the seeded dataset; `LiveProvider` pulls your
+real accounts through the Meta Marketing API (v26) and assembles the exact same
+snapshot shape — so every screen, chart, and engine rule works identically on
+demo and live data. All Graph traffic routes through a **zero-dependency Node
+proxy** (`server/proxy.mjs`) that holds the tokens; the browser never sees a
+credential. The **AI engine** (`src/lib/ai/`) is deterministic heuristics —
+encoded ad-ops thresholds, tunable per client in Settings — with an optional
+Claude narrative layer that enriches the prose but never changes the math.
 
 ```
+server/
+  proxy.mjs             zero-dep token proxy: Graph forwarding, per-BM token
+                        routing, rate-limit backoff, /healthz, static prod serving
 src/
   lib/
     types.ts            domain model (mirrors the Meta object graph)
     demo/               deterministic seeded dataset generator
-    metrics.ts          KPI derivations + date math
-    selectors.ts        entity → insights → metrics
-    provider/           DataProvider seam: demo + live(scaffold)
-    ai/                 engine (heuristics) · creative · report · llm(scaffold)
+    dataset/            assembleDataset() — the one snapshot builder (demo + live)
+    metrics.ts          KPI derivations + provider-owned date anchor
+    selectors.ts        entity → insights → metrics (true period reach on live)
+    provider/           DataProvider seam: demo · live (Graph v26 via the proxy)
+    ai/                 engine (heuristics) · creative · report · llm (Claude, opt-in)
   components/           ui primitives · charts · blocks · shell
   screens/              the pages
   app/                  store (zustand) · router · shell
@@ -82,13 +118,31 @@ docs/                   see docs/README.md for the index — engineering guides
                         and build-process artifacts
 ```
 
+## Testing & verification
+
+**134 Vitest tests across 17 suites**: demo-dataset goldens (byte-identical
+through refactors), Graph→domain mapping fixtures, a full `loadSnapshot`
+integration run against a faked Graph API (with the AI engine catching a seeded
+losing ad on live-shaped data), async report-job polling semantics, period
+reach/frequency math, transport (pagination, multi-account, failure paths,
+throttle backoff), the write path's minor-unit currency traps, and 21 proxy
+tests against an in-process mock upstream — token injection, redaction, CSRF
+guard, path validation. CI runs the lot on every push. The build was also
+adversarially reviewed by a multi-agent fleet; all confirmed findings are fixed
+(see the `review:` commit).
+
 **New here?** [`docs/README.md`](docs/README.md) indexes every doc by purpose.
 
 ## Honest status
 
-This is a **near-finish-line first draft**, not a finished or market-validated
-product. What's verified-working, what's scaffolded for your API, and what's
-simulated in demo is tracked transparently in
-[`docs/LEDGER.md`](docs/LEDGER.md). Read it before trusting any single claim.
+Everything above is real, but honesty about the boundary matters: the live
+pipeline is **machine-verified against a faked Graph API**, not yet proven
+against a production ad account — the checks only real credentials can pass
+(numbers reconciling with Ads Manager, a sandbox write landing) are tracked as
+explicit human gates in [`docs/LEDGER.md`](docs/LEDGER.md), alongside every
+known approximation. Read it before trusting any single claim. The AI's calls
+are encoded best practice — a signal a buyer weighs, not a backtested edge.
 
-Stack: React 18 · TypeScript · Vite · Tailwind · Recharts · Zustand.
+Stack: React 18 · TypeScript · Vite · Tailwind · Recharts · Zustand · a
+zero-dependency Node ≥20 proxy. Licensed [MIT](LICENSE) — use it, fork it,
+point it at your own accounts.

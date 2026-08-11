@@ -6,9 +6,9 @@ The rest of this folder, grouped by what you need it for:
 ## 🔧 Engineering — read these to work on / ship the app
 | Doc | What it's for |
 |---|---|
-| [`META_INTEGRATION.md`](META_INTEGRATION.md) | The "turn the lights on" guide — how to move from demo data to the live Meta Marketing API (auth, multi-BM, the provider seam). |
-| [`PROMPT_PACK_live_integration.md`](PROMPT_PACK_live_integration.md) | The live-integration work sequenced into 6 self-contained, runnable build prompts (proxy → structure map → insights → fidelity → writes → LLM). |
-| [`LEDGER.md`](LEDGER.md) | **Honest status** — what's verified-working vs scaffolded-for-API vs simulated-in-demo, plus the known residual. Read before trusting any claim. |
+| [`META_INTEGRATION.md`](META_INTEGRATION.md) | **The go-live guide** — running the token proxy, mapping your real ad accounts, multi-BM auth, the go-live checklist. Start here to use Meridian with your own Meta accounts. |
+| [`PROMPT_PACK_live_integration.md`](PROMPT_PACK_live_integration.md) | The live-integration build plan (proxy → structure map → insights → fidelity → writes → LLM) — **executed 2026-08-11**; kept as the record of how the live mile was built and what was corrected along the way. |
+| [`LEDGER.md`](LEDGER.md) | **Honest status** — what's verified-working vs machine-verified-awaiting-real-credentials vs simulated-in-demo, incl. the 🚪 human gates and known approximations. Read before trusting any claim. |
 
 ## 📚 Reference — the domain knowledge the engine encodes
 | Doc | What it's for |

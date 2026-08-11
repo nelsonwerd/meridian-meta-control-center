@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "license": "MIT",
   "type": "module",
-  "description": "Meridian — an internal AI-driven command & control center for agency Meta advertising.",
+  "description": "Meridian — an open-source AI command & control center for agency Meta advertising. Demo mode out of the box; live mode for real ad accounts via the Meta Marketing API.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && tsc -p server && vite build",
