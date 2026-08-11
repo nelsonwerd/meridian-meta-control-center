@@ -13,6 +13,13 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    // Dev-mode forwarding to the token proxy (server/proxy.mjs). The browser
+    // calls same-origin /api/* and /healthz; the proxy injects the Meta token
+    // server-side. Start it with: npm run proxy
+    proxy: {
+      '/api': 'http://localhost:8787',
+      '/healthz': 'http://localhost:8787',
+    },
   },
   build: {
     rollupOptions: {
@@ -27,8 +34,8 @@ export default defineConfig({
     },
   },
   test: {
-    // All suites are pure (data/metrics/engine) — no DOM needed.
+    // All suites are pure (data/metrics/engine) or in-process HTTP — no DOM needed.
     environment: 'node',
-    include: ['src/**/*.{test,spec}.ts'],
+    include: ['src/**/*.{test,spec}.ts', 'server/**/*.{test,spec}.ts'],
   },
 })

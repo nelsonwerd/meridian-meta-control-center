@@ -22,9 +22,23 @@ import type { ActionRequest, ActionResult, DataProvider, Snapshot } from './type
    NOT executed in this build (no tokens) → logged as scaffolded in LEDGER.md.
    ========================================================================== */
 
-const GRAPH_BASE = 'https://graph.facebook.com'
-// Current GA as of 2026-02-18 (per deep-dive research). Each version lives ~2yr.
-export const API_VERSION = 'v25.0'
+/** All Graph traffic goes through the backend token proxy (server/proxy.mjs) —
+ *  the browser NEVER holds a Meta token. Default is the same-origin proxy mount;
+ *  override via VITE_GRAPH_BASE only for tests/unusual deployments. */
+const GRAPH_BASE: string = (import.meta.env?.VITE_GRAPH_BASE as string | undefined) ?? '/api/meta'
+// v26.0 GA 2026-07-29. Verified 2026-08-11: the v26 changes (Commerce endpoint
+// blocks, IG Explore placement, Messenger Stories strip) do not touch Meridian's
+// surface (campaign/adset/ad/adcreative reads, /insights, status/budget writes).
+// Marketing API versions live ~12 months — v25.0 would sunset ~Feb 2027.
+export const API_VERSION = 'v26.0'
+
+/** Resolve GRAPH_BASE to an absolute URL base (relative proxy mounts resolve
+ *  against the page origin; node test env falls back to localhost). */
+function apiBase(): string {
+  if (GRAPH_BASE.startsWith('http')) return GRAPH_BASE
+  const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+  return origin + GRAPH_BASE
+}
 
 // The standard conversion event. Configurable per account; pixel-only accounts
 // fall back to 'offsite_conversion.fct.purchase'.
@@ -58,14 +72,17 @@ export const INSIGHT_FIELDS = [
 export interface LiveAccountConfig {
   clientId: string
   adAccountId: string // act_<id>
+  /** Routed to the proxy via X-Meta-Business-Id so partner BMs with their own
+   *  tokens (META_TOKENS) resolve server-side. */
   businessId: string
-  /** Optional: in production the token lives server-side (the proxy injects it),
-   *  so a persisted mapping carries NO token. Falls back to defaultAccessToken. */
+  /** @deprecated tokens live ONLY server-side (proxy env). Never read; kept so
+   *  older persisted configs still parse. */
   accessToken?: string
 }
 
 export interface LiveConfig {
-  /** default system-user token (agency BM) */
+  /** @deprecated tokens live ONLY server-side (proxy env). Never read; kept so
+   *  older persisted configs still parse. */
   defaultAccessToken?: string
   accounts: LiveAccountConfig[]
   /** clients metadata (targets etc.) the API doesn't carry — set in Settings */
@@ -128,35 +145,42 @@ function parseBuc(res: Response): BucUsage | null {
   }
 }
 
-function buildUrl(path: string, params: Record<string, string>, token: string, extra: Record<string, string> = {}): string {
-  const url = new URL(`${GRAPH_BASE}/${API_VERSION}/${path}`)
-  Object.entries({ ...params, access_token: token, ...extra }).forEach(([k, v]) => url.searchParams.set(k, v))
+function buildUrl(path: string, params: Record<string, string>, extra: Record<string, string> = {}): string {
+  // NO access_token here — the proxy injects it server-side. A token in this
+  // query string would be a security regression (and the proxy rejects it).
+  const url = new URL(`${apiBase()}/${API_VERSION}/${path}`)
+  Object.entries({ ...params, ...extra }).forEach(([k, v]) => url.searchParams.set(k, v))
   return url.toString()
 }
 
-// Single fetch with minimal throttle backoff. GROUNDWORK ONLY — real rate-limit
-// handling and async insight report jobs for large pulls belong in the backend
-// proxy that holds the token (docs/META_INTEGRATION.md §3). Backs off on a 429 or
-// when BUC usage crosses ~95%, up to 3 attempts.
-async function graphFetch(url: string, attempt = 0): Promise<Response> {
-  const res = await fetch(url)
+/** Per-request routing header: the proxy maps a business id → its token
+ *  (META_TOKENS), falling back to the agency system-user token. */
+function routingHeaders(businessId?: string): Record<string, string> {
+  return businessId ? { 'X-Meta-Business-Id': businessId } : {}
+}
+
+// Single fetch with minimal throttle backoff. The proxy also backs off
+// server-side; this browser-side pass is a second seatbelt for long pulls.
+// Backs off on a 429 or when BUC usage crosses ~95%, up to 3 attempts.
+async function graphFetch(url: string, businessId?: string, attempt = 0): Promise<Response> {
+  const res = await fetch(url, { headers: routingHeaders(businessId) })
   const buc = parseBuc(res)
   const throttled = res.status === 429 || (buc != null && (buc.callCount >= 95 || buc.totalCpuTime >= 95))
   if (throttled && attempt < 3) {
     const waitMs = buc?.estimatedTimeToRegainAccess ? buc.estimatedTimeToRegainAccess * 1000 : Math.min(2 ** attempt * 1000, 8000)
     await new Promise((r) => setTimeout(r, waitMs))
-    return graphFetch(url, attempt + 1)
+    return graphFetch(url, businessId, attempt + 1)
   }
   return res
 }
 
 /** Paginated EDGE read (returns the full data[] across pages). */
-async function graphGet<T>(path: string, params: Record<string, string>, token: string): Promise<T[]> {
+async function graphGet<T>(path: string, params: Record<string, string>, businessId?: string): Promise<T[]> {
   const out: T[] = []
   let after: string | undefined
   let pages = 0
   do {
-    const res = await graphFetch(buildUrl(path, params, token, { limit: '200', ...(after ? { after } : {}) }))
+    const res = await graphFetch(buildUrl(path, params, { limit: '200', ...(after ? { after } : {}) }), businessId)
     if (!res.ok) {
       const body = await res.text()
       throw new Error(`Graph ${res.status}: ${body.slice(0, 300)}`)
@@ -175,8 +199,8 @@ async function graphGet<T>(path: string, params: Record<string, string>, token: 
 
 /** Single NODE read (an object, not an edge — no pagination). Throws if the node
  *  is missing/errored so callers can't read a false success from an empty edge. */
-async function graphGetNode<T>(path: string, params: Record<string, string>, token: string): Promise<T> {
-  const res = await graphFetch(buildUrl(path, params, token))
+async function graphGetNode<T>(path: string, params: Record<string, string>, businessId?: string): Promise<T> {
+  const res = await graphFetch(buildUrl(path, params), businessId)
   if (!res.ok) {
     const body = await res.text()
     throw new Error(`Graph ${res.status}: ${body.slice(0, 300)}`)
@@ -200,14 +224,13 @@ export class LiveProvider implements DataProvider {
   async checkConnection() {
     if (!this.cfg || this.cfg.accounts.length === 0) return { ok: false, detail: 'No accounts configured.' }
     const first = this.cfg.accounts[0]
-    const token = first.accessToken || this.cfg.defaultAccessToken || ''
     try {
       // A node GET (not the edge-shaped graphGet, which would parse data[] off a
       // node response and report a false success). Assert we actually got the account.
       const node = await graphGetNode<{ name?: string; account_status?: number }>(
         first.adAccountId,
         { fields: 'name,currency,account_status' },
-        token,
+        first.businessId,
       )
       if (!node.name) throw new Error('account node returned no name — the token may lack access to this ad account')
       return { ok: true, detail: `Connected to ${node.name}. ${this.cfg.accounts.length} ad account(s) mapped.` }
@@ -227,22 +250,25 @@ export class LiveProvider implements DataProvider {
     const insights: Insight[] = []
 
     for (const acct of cfg.accounts) {
-      const token = acct.accessToken || cfg.defaultAccessToken || ''
       // Node read (not the edge-shaped graphGet) so we actually get the account
-      // object, and can source the real currency_offset + the account timezone.
-      const acctNode = await graphGetNode<{ name?: string; currency?: string; timezone_name?: string; currency_offset?: number }>(
+      // object + the account timezone. NB: currency_offset is NOT a field on the
+      // AdAccount node (verified 2026-08-11 vs the ad-account reference) — the
+      // minor-unit offset is derived from `currency` via currencyOffset() (the
+      // per-currency rule from developers.facebook.com/docs/marketing-api/currencies).
+      const acctNode = await graphGetNode<{ name?: string; currency?: string; timezone_name?: string }>(
         acct.adAccountId,
-        { fields: 'name,currency,timezone_name,currency_offset' },
-        token,
+        { fields: 'name,currency,timezone_name' },
+        acct.businessId,
       )
       const timezone = acctNode.timezone_name ?? 'America/New_York'
+      const currency = acctNode.currency ?? 'USD'
       accounts.push({
         id: acct.adAccountId,
         clientId: acct.clientId,
         name: acctNode.name ?? acct.adAccountId,
-        currency: acctNode.currency ?? 'USD',
+        currency,
         timezone,
-        currency_offset: acctNode.currency_offset,
+        currency_offset: currencyOffset(currency),
       })
 
       // Insights window in the ACCOUNT's timezone — Meta reports daily rows on the
@@ -251,13 +277,13 @@ export class LiveProvider implements DataProvider {
       const until = isoDaysAgoInTz(timezone, 0)
 
       // structure
-      const rawCampaigns = await graphGet<any>(`${acct.adAccountId}/campaigns`, { fields: 'name,objective,status,daily_budget,bid_strategy' }, token)
+      const rawCampaigns = await graphGet<any>(`${acct.adAccountId}/campaigns`, { fields: 'name,objective,status,daily_budget,bid_strategy' }, acct.businessId)
       // … map rawCampaigns → Campaign[], rawAdSets → AdSet[], etc.
       // Each /insights call uses level + time_increment=1 to get the daily ad rows.
       const adRows = await graphGet<any>(
         `${acct.adAccountId}/insights`,
         { level: 'ad', time_increment: '1', fields: `ad_id,${INSIGHT_FIELDS}`, time_range: JSON.stringify({ since, until }) },
-        token,
+        acct.businessId,
       )
       for (const r of adRows) {
         insights.push({
@@ -310,9 +336,10 @@ export class LiveProvider implements DataProvider {
     // A multi-BM agency holds a token per client-owned BM — using accounts[0]
     // blindly would POST with the wrong token and fail (or hit the wrong account).
     const acct = this.resolveAccount(req, snapshot)
-    if (!acct) return { ok: false, message: `No account/token mapped for entity ${req.entityId}.` }
-    const token = acct.accessToken || this.cfg.defaultAccessToken || ''
-    const body = new URLSearchParams({ access_token: token })
+    if (!acct) return { ok: false, message: `No account mapped for entity ${req.entityId}.` }
+    // NO access_token in the body — the proxy injects it server-side (and
+    // rejects any client-supplied token as a misconfiguration).
+    const body = new URLSearchParams()
     if (req.kind === 'pause') body.set('status', 'PAUSED')
     if (req.kind === 'activate') body.set('status', 'ACTIVE')
     if ((req.kind === 'increase_budget' || req.kind === 'decrease_budget') && req.proposedBudget != null) {
@@ -322,7 +349,7 @@ export class LiveProvider implements DataProvider {
       const offset = account?.currency_offset ?? currencyOffset(account?.currency ?? 'USD')
       body.set('daily_budget', String(Math.round(req.proposedBudget * offset)))
     }
-    const res = await fetch(`${GRAPH_BASE}/${API_VERSION}/${req.entityId}`, { method: 'POST', body })
+    const res = await fetch(`${apiBase()}/${API_VERSION}/${req.entityId}`, { method: 'POST', body, headers: routingHeaders(acct.businessId) })
     const text = await res.text()
     if (!res.ok) return { ok: false, message: `Graph ${res.status}: ${text.slice(0, 200)}` }
     // 2xx is necessary but not sufficient — Graph can return { success:false } or an
@@ -351,18 +378,16 @@ export class LiveProvider implements DataProvider {
   }
 }
 
-// Meta currency_offset by ISO code. Most are 100 (two-decimal); zero-decimal and
-// three-decimal currencies differ. Always prefer the per-account value from the
-// Graph API (set on AdAccount.currency_offset); this static map is only the
-// fallback. NB: HUF and TWD are TWO-decimal in Meta's currency_offset — they are
-// deliberately NOT in this zero-decimal set (a mis-bucket would POST 100x too small).
-const ZERO_DECIMAL = new Set(['JPY', 'KRW', 'VND', 'CLP', 'ISK', 'UGX'])
-const THREE_DECIMAL = new Set(['KWD', 'BHD', 'JOD', 'OMR', 'TND'])
+// Meta minor-unit offset by ISO code, per Meta's own currencies reference
+// (developers.facebook.com/docs/marketing-api/currencies, verified 2026-08-11):
+// offset 1 for exactly this set, offset 100 for every other supported ad
+// currency. NB: HUF and TWD ARE in Meta's offset-1 set even though ISO-4217
+// gives them 2 decimals — Meta diverges from ISO here, so a "two-decimal"
+// assumption would POST budgets 100x too large. Meta supports no offset-1000
+// ad currencies (KWD/BHD/etc. are not billable ad currencies).
+const OFFSET_ONE = new Set(['CLP', 'COP', 'CRC', 'HUF', 'ISK', 'IDR', 'JPY', 'KRW', 'PYG', 'TWD', 'VND'])
 export function currencyOffset(currency: string): number {
-  const c = currency.toUpperCase()
-  if (ZERO_DECIMAL.has(c)) return 1
-  if (THREE_DECIMAL.has(c)) return 1000
-  return 100
+  return OFFSET_ONE.has(currency.toUpperCase()) ? 1 : 100
 }
 
 /** Today's date (YYYY-MM-DD) in a given IANA timezone; falls back to UTC. */

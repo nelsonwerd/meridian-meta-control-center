@@ -1,25 +1,42 @@
 import { describe, it, expect } from 'vitest'
 import { currencyOffset } from '../provider/liveProvider'
 
-/* The static currency_offset map is a stable contract (Meta minor-unit factors).
-   Per-account sourcing of currency_offset (#03) is live-only and ledgered, not
-   unit-tested here. */
-describe('currencyOffset (static fallback map)', () => {
-  it('two-decimal currencies → 100', () => {
-    for (const c of ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'BRL', 'MXN']) {
+/* The minor-unit offset map, corrected 2026-08-11 against Meta's own currencies
+   reference (developers.facebook.com/docs/marketing-api/currencies):
+
+   - Offset 1 for EXACTLY: CLP, COP, CRC, HUF, ISK, IDR, JPY, KRW, PYG, TWD, VND.
+   - Offset 100 for every other supported ad currency.
+   - Meta bills ads in no offset-1000 currency (KWD/BHD/JOD/OMR/TND are not
+     billable ad currencies), so the former three-decimal bucket was removed.
+
+   NB the two traps this map guards against:
+   1. HUF and TWD are offset 1 at Meta DESPITE being 2-decimal in ISO-4217 —
+      an "ISO decimals" assumption would POST budgets 100x too LARGE.
+   2. currency_offset is NOT a field on the AdAccount node — it cannot be
+      fetched per account; this static map (from Meta's currencies page) is the
+      source of truth, keyed by the account's `currency` field.
+   (A previous revision of this suite asserted HUF/TWD → 100 based on an
+   unverified reading; that was wrong against the primary source.) */
+describe('currencyOffset (Meta minor-unit map)', () => {
+  it('standard two-decimal ad currencies → 100', () => {
+    for (const c of ['USD', 'EUR', 'GBP', 'CAD', 'AUD', 'BRL', 'MXN', 'SEK', 'PLN', 'INR']) {
       expect(currencyOffset(c)).toBe(100)
     }
   })
 
-  it('zero-decimal currencies → 1', () => {
-    for (const c of ['JPY', 'KRW', 'VND', 'CLP', 'ISK', 'UGX']) {
+  it("Meta's offset-1 set → 1 (the exact list from the currencies page)", () => {
+    for (const c of ['CLP', 'COP', 'CRC', 'HUF', 'ISK', 'IDR', 'JPY', 'KRW', 'PYG', 'TWD', 'VND']) {
       expect(currencyOffset(c)).toBe(1)
     }
   })
 
-  it('three-decimal currencies → 1000', () => {
+  it('currencies NOT in the offset-1 set stay 100 (incl. UGX, which the old map mis-bucketed)', () => {
+    expect(currencyOffset('UGX')).toBe(100)
+  })
+
+  it('non-billable three-decimal ISO currencies default to 100 (Meta does not bill ads in them)', () => {
     for (const c of ['KWD', 'BHD', 'JOD', 'OMR', 'TND']) {
-      expect(currencyOffset(c)).toBe(1000)
+      expect(currencyOffset(c)).toBe(100)
     }
   })
 
@@ -29,16 +46,14 @@ describe('currencyOffset (static fallback map)', () => {
 
   it('is case-insensitive', () => {
     expect(currencyOffset('jpy')).toBe(1)
+    expect(currencyOffset('twd')).toBe(1)
     expect(currencyOffset('usd')).toBe(100)
   })
 
-  // HUF and TWD are two-decimal in Meta's currency_offset; the map previously
-  // mis-bucketed them as zero-decimal (a budget POST would have been 100x too
-  // small). Fixed in P5 — these now assert the correct value.
-  it('HUF is two-decimal (100)', () => {
-    expect(currencyOffset('HUF')).toBe(100)
-  })
-  it('TWD is two-decimal (100)', () => {
-    expect(currencyOffset('TWD')).toBe(100)
+  it('a $50.00 budget converts to 5000 minor units in USD and 50 in JPY-style currencies', () => {
+    expect(Math.round(50 * currencyOffset('USD'))).toBe(5000)
+    expect(Math.round(50 * currencyOffset('JPY'))).toBe(50)
+    // The HUF trap: 50 HUF budget must POST as 50, not 5000.
+    expect(Math.round(50 * currencyOffset('HUF'))).toBe(50)
   })
 })

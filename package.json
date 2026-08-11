@@ -7,9 +7,10 @@
   "description": "Meridian — an internal AI-driven command & control center for agency Meta advertising.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc -p server && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "proxy": "node server/proxy.mjs",
+    "typecheck": "tsc --noEmit && tsc -p server",
     "lint": "eslint .",
     "test": "vitest",
     "test:run": "vitest run"
