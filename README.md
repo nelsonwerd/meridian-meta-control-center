@@ -72,8 +72,17 @@ Both paths — plus the System User setup, per-BM token routing, single-process
 production deploys, and the optional Claude narrative layer — are in
 **[`docs/META_INTEGRATION.md`](docs/META_INTEGRATION.md)** (audited against
 Meta's docs 2026-08-11), along with the go-live checklist of the checks only a
-real account can pass. Budget/pause writes always require an explicit in-app
-confirm and are never auto-run.
+real account can pass.
+
+> ⚠️ **Live mode changes real campaigns and spends real money.** Pausing an ad
+> or raising a budget here does it for real, immediately, with no undo — a
+> client-side revert would only desync you from Meta. Every write needs an
+> explicit in-app confirmation, nothing is ever applied automatically, and the
+> AI's recommendations are a signal to weigh, not instructions to follow. You
+> are responsible for what you apply; this software comes with no warranty (see
+> [LICENSE](LICENSE)). Test on a sandbox or your lowest-spend account first.
+> Found a security problem? See [SECURITY.md](SECURITY.md) — please report it
+> privately.
 
 ## What's inside
 
