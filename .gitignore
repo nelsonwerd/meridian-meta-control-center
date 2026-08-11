@@ -10,3 +10,6 @@ dist-ssr
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# didrun verification ledgers — secret-bearing, never commit
+.didrun/
