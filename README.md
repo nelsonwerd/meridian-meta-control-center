@@ -9,6 +9,11 @@ creative · an AI analyst that scores the data and proposes one-click optimizati
 · designed weekly Monday reports · demo mode out of the box, live mode for your
 real ad accounts.
 
+### ▶︎ [**Try the live demo**](https://nelsonwerd.github.io/meridian-meta-control-center/) — no signup, no keys
+
+<sub>Runs entirely in your browser on a seeded, synthetic dataset. Click through
+every screen; apply a recommendation and watch it flow into the activity ledger.</sub>
+
 <br />
 
 <img src="docs/screenshots/overview.png" alt="Meridian Command Overview — cross-client KPIs, the Watchtower anomaly feed, a blended performance trend, and spend allocation by client" width="900">
@@ -18,6 +23,10 @@ real ad accounts.
 ---
 
 ## Quick start (demo — zero keys)
+
+Nothing to install if you just want to look: **[the hosted demo is
+here](https://nelsonwerd.github.io/meridian-meta-control-center/)**. To run it
+locally:
 
 ```bash
 npm install
