@@ -8,6 +8,25 @@ import type {
   Insight,
 } from '../types'
 import type { ActionRequest, ActionResult, DataProvider, Snapshot } from './types'
+import { assembleDataset } from '../dataset/assemble'
+import {
+  ensureClientCosmetics,
+  mapAd,
+  mapAdSet,
+  mapCampaign,
+  mapCreative,
+  mapInsightRow,
+  placeholderCreative,
+  synthesizeBusinessManagers,
+  PURCHASE_ACTION,
+  type RawAd,
+  type RawAdSet,
+  type RawCampaign,
+  type RawCreative,
+} from './liveMap'
+
+// Re-exported for existing importers (Settings, tests).
+export { PURCHASE_ACTION, PURCHASE_ACTION_FALLBACK, actionVal } from './liveMap'
 
 /* ============================================================================
    LiveProvider — Meta (Facebook) Marketing API client SCAFFOLD.
@@ -40,11 +59,6 @@ function apiBase(): string {
   return origin + GRAPH_BASE
 }
 
-// The standard conversion event. Configurable per account; pixel-only accounts
-// fall back to 'offsite_conversion.fct.purchase'.
-export const PURCHASE_ACTION = 'omni_purchase'
-export const PURCHASE_ACTION_FALLBACK = 'offsite_conversion.fct.purchase'
-
 /** The Insights fields required to derive every Meridian KPI. NB: there is no
  *  scalar purchases/revenue field — orders, revenue, CPA & ROAS are all pulled
  *  out of the nested actions/action_values/purchase_roas arrays by action_type. */
@@ -75,6 +89,14 @@ export interface LiveAccountConfig {
   /** Routed to the proxy via X-Meta-Business-Id so partner BMs with their own
    *  tokens (META_TOKENS) resolve server-side. */
   businessId: string
+  /** Display name + type for the synthesized BusinessManager row (the client
+   *  directory and scope switcher group by BM). */
+  businessName?: string
+  businessType?: 'agency' | 'partner'
+  /** The purchase action_type this account attributes orders to. Default
+   *  omni_purchase (web+app+offline de-duplicated — matches Ads Manager most
+   *  often); pixel-only accounts may use offsite_conversion.fct.purchase. */
+  purchaseActionType?: string
   /** @deprecated tokens live ONLY server-side (proxy env). Never read; kept so
    *  older persisted configs still parse. */
   accessToken?: string
@@ -212,11 +234,6 @@ async function graphGetNode<T>(path: string, params: Record<string, string>, bus
   return node
 }
 
-/** Pull the additive action/value out of Meta's nested actions array. */
-function actionVal(arr: { action_type: string; value: string }[] | undefined, type: string): number {
-  return Number(arr?.find((a) => a.action_type === type)?.value ?? 0)
-}
-
 export class LiveProvider implements DataProvider {
   readonly mode = 'live' as const
   constructor(private cfg: LiveConfig | null = loadLiveConfig()) {}
@@ -249,6 +266,11 @@ export class LiveProvider implements DataProvider {
     const creatives: Creative[] = []
     const insights: Insight[] = []
 
+    // The app's "now": today in the FIRST account's timezone (the primary
+    // account anchors the whole snapshot; per-account insights windows still
+    // use each account's own tz below).
+    let anchor: string | null = null
+
     for (const acct of cfg.accounts) {
       // Node read (not the edge-shaped graphGet) so we actually get the account
       // object + the account timezone. NB: currency_offset is NOT a field on the
@@ -262,67 +284,109 @@ export class LiveProvider implements DataProvider {
       )
       const timezone = acctNode.timezone_name ?? 'America/New_York'
       const currency = acctNode.currency ?? 'USD'
+      const offset = currencyOffset(currency)
       accounts.push({
         id: acct.adAccountId,
         clientId: acct.clientId,
         name: acctNode.name ?? acct.adAccountId,
         currency,
         timezone,
-        currency_offset: currencyOffset(currency),
+        currency_offset: offset,
       })
+      if (!anchor) anchor = isoDaysAgoInTz(timezone, 0)
+      const ctx = { clientId: acct.clientId, accountId: acct.adAccountId, anchor, currencyOffset: offset }
 
-      // Insights window in the ACCOUNT's timezone — Meta reports daily rows on the
+      // ---- structure: campaigns → ad sets → ads → creatives ----
+      // effective_status (not bare status) is what tells the truth about
+      // delivery — bare status can read ACTIVE inside a paused campaign.
+      const rawCampaigns = await graphGet<RawCampaign>(
+        `${acct.adAccountId}/campaigns`,
+        { fields: 'name,objective,status,effective_status,daily_budget,lifetime_budget,bid_strategy,smart_promotion_type,created_time' },
+        acct.businessId,
+      )
+      const rawAdSets = await graphGet<RawAdSet>(
+        `${acct.adAccountId}/adsets`,
+        { fields: 'name,campaign_id,status,effective_status,optimization_goal,billing_event,daily_budget,lifetime_budget,targeting,learning_stage_info,created_time' },
+        acct.businessId,
+      )
+      const rawAds = await graphGet<RawAd>(
+        `${acct.adAccountId}/ads`,
+        { fields: 'name,adset_id,campaign_id,status,effective_status,creative{id},created_time' },
+        acct.businessId,
+      )
+      const rawCreatives = await graphGet<RawCreative>(
+        `${acct.adAccountId}/adcreatives`,
+        { fields: 'name,object_story_spec,asset_feed_spec,object_story_id' },
+        acct.businessId,
+      )
+
+      const mappedAdSets = rawAdSets.map((r) => mapAdSet(r, ctx))
+      const adSetStatusById = new Map(mappedAdSets.map((s) => [s.id, s.status]))
+      const mappedAds = rawAds.map((r) => mapAd(r, adSetStatusById.get(r.adset_id ?? ''), ctx))
+
+      // Earliest referencing-ad date per creative — /adcreatives has no created
+      // date, and a real date is what keeps the batch cohorts meaningful.
+      const earliestAdByCreative = new Map<string, string>()
+      for (const ad of mappedAds) {
+        if (!ad.creativeId) continue
+        const prev = earliestAdByCreative.get(ad.creativeId)
+        if (!prev || ad.createdAt < prev) earliestAdByCreative.set(ad.creativeId, ad.createdAt)
+      }
+      const mappedCreatives = rawCreatives.map((r) => mapCreative(r, ctx, earliestAdByCreative.get(r.id)))
+      const creativeIds = new Set(mappedCreatives.map((c) => c.id))
+      // Ads can reference creatives the /adcreatives page didn't return —
+      // synthesize placeholders so CreativeThumb/cohort lookups never crash.
+      for (const ad of mappedAds) {
+        if (ad.creativeId && !creativeIds.has(ad.creativeId)) {
+          creativeIds.add(ad.creativeId)
+          mappedCreatives.push(placeholderCreative(ad.creativeId, ad.name, ctx))
+        }
+      }
+
+      campaigns.push(...rawCampaigns.map((r) => mapCampaign(r, ctx)))
+      adSets.push(...mappedAdSets)
+      ads.push(...mappedAds)
+      creatives.push(...mappedCreatives)
+
+      // ---- insights: daily ad-grain rows over the configured window ----
+      // Window in the ACCOUNT's timezone — Meta reports daily rows on the
       // account tz, so a UTC window would shift totals vs Ads Manager.
-      const since = isoDaysAgoInTz(timezone, cfg.windowDays)
+      // (windowDays - 1) back through today = exactly windowDays days,
+      // matching the demo's window semantics.
+      const since = isoDaysAgoInTz(timezone, cfg.windowDays - 1)
       const until = isoDaysAgoInTz(timezone, 0)
-
-      // structure
-      const rawCampaigns = await graphGet<any>(`${acct.adAccountId}/campaigns`, { fields: 'name,objective,status,daily_budget,bid_strategy' }, acct.businessId)
-      // … map rawCampaigns → Campaign[], rawAdSets → AdSet[], etc.
-      // Each /insights call uses level + time_increment=1 to get the daily ad rows.
+      const purchaseAction = acct.purchaseActionType || PURCHASE_ACTION
       const adRows = await graphGet<any>(
         `${acct.adAccountId}/insights`,
         { level: 'ad', time_increment: '1', fields: `ad_id,${INSIGHT_FIELDS}`, time_range: JSON.stringify({ since, until }) },
         acct.businessId,
       )
       for (const r of adRows) {
-        insights.push({
-          adId: r.ad_id,
-          clientId: acct.clientId,
-          date: r.date_start,
-          spend: Number(r.spend ?? 0),
-          impressions: Number(r.impressions ?? 0),
-          reach: Number(r.reach ?? 0),
-          clicks: Number(r.clicks ?? 0),
-          linkClicks: Number(r.inline_link_clicks ?? 0),
-          purchases: actionVal(r.actions, PURCHASE_ACTION) || actionVal(r.actions, PURCHASE_ACTION_FALLBACK),
-          revenue: actionVal(r.action_values, PURCHASE_ACTION) || actionVal(r.action_values, PURCHASE_ACTION_FALLBACK),
-          addToCart: actionVal(r.actions, 'add_to_cart'),
-          landingPageViews: actionVal(r.actions, 'landing_page_view'),
-          videoPlays: actionVal(r.video_play_actions, 'video_view'),
-          video3s: actionVal(r.video_3_sec_watched_actions, 'video_view'),
-          videoThruplays: actionVal(r.video_thruplay_watched_actions, 'video_view'),
-        })
+        insights.push(mapInsightRow(r, acct.clientId, purchaseAction))
       }
-      void rawCampaigns // mapping omitted in scaffold — structure pull follows the same pattern
     }
 
-    // These four arrays are the RESERVED accumulators for the deferred structure→
-    // type mapping (#02): once that last-mile lands they hold the mapped
-    // campaigns/adsets/ads/creatives and feed the shared index builder. Referenced
-    // via void so the scaffold stays strict-clean (noUnusedLocals) without deleting
-    // the reserved home or faking usage. (See docs/PROMPT_PACK_live_integration.md.)
-    void campaigns
-    void adSets
-    void ads
-    void creatives
+    // ---- clients + business managers (config-sourced, cosmetics ensured) ----
+    const primaryCurrency = accounts[0]?.currency ?? 'USD'
+    const acctByClient = new Map(cfg.accounts.map((a) => [a.clientId, a]))
+    const clients: Client[] = cfg.accounts.map((a) => {
+      const configured = cfg.clients.find((c) => c.id === a.clientId)
+      const account = accounts.find((x) => x.clientId === a.clientId)
+      const base = ensureClientCosmetics(
+        configured ?? { id: a.clientId, name: account?.name ?? a.clientId },
+        anchor ?? isoTodayInTz('UTC'),
+        cfg.windowDays,
+        account?.currency ?? primaryCurrency,
+      )
+      // The directory + scope switcher group clients by bmId — bind it to the
+      // account's business id so every live client is visible under its BM.
+      return { ...base, bmId: acctByClient.get(a.clientId)?.businessId ?? base.bmId }
+    })
+    const businessManagers = synthesizeBusinessManagers(cfg.accounts)
 
-    // Indexes are rebuilt by buildIndexes() — shared with demo. (Scaffold: when
-    // structure mapping above is completed, call the same index builder.)
-    throw new Error(
-      'LiveProvider.loadSnapshot is a wired scaffold: insights pull + action POSTs are implemented; the structure→type mapping (campaigns/adsets/ads/creatives) is the remaining last-mile. See docs/META_INTEGRATION.md.',
-    )
-    return {} as Snapshot
+    const ds = assembleDataset({ businessManagers, clients, accounts, campaigns, adSets, ads, creatives, insights })
+    const dataAnchor = anchor ?? isoTodayInTz('UTC')
+    return { ...ds, mode: 'live', generatedAt: new Date().toISOString(), dataAnchor, windowDays: cfg.windowDays }
   }
 
   async applyAction(req: ActionRequest, snapshot: Snapshot): Promise<ActionResult> {

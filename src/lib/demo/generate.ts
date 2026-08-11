@@ -4,6 +4,7 @@ import type {
   AdSet,
   AudienceSpec,
   AudienceType,
+  BusinessManager,
   Campaign,
   CampaignKind,
   Client,
@@ -14,6 +15,7 @@ import type {
   ISODate,
   OptimizationGoal,
 } from '../types'
+import { assembleDataset } from '../dataset/assemble'
 import {
   ANGLE_GRADIENTS,
   AUDIENCE_LABELS,
@@ -62,7 +64,7 @@ interface AdPlan {
 }
 
 export interface Dataset {
-  businessManagers: typeof BUSINESS_MANAGERS
+  businessManagers: BusinessManager[]
   clients: Client[]
   accounts: AdAccount[]
   campaigns: Campaign[]
@@ -549,73 +551,13 @@ export function generateDataset(): Dataset {
     insights.push(...generateInsights(client, g.plans, dates))
   }
 
-  // ---- indexes ----
-  const clientById = new Map(clients.map((c) => [c.id, c]))
-  const accountByClient = new Map(accounts.map((a) => [a.clientId, a]))
-  const adById = new Map(ads.map((a) => [a.id, a]))
-  const adSetById = new Map(adSets.map((a) => [a.id, a]))
-  const campaignById = new Map(campaigns.map((c) => [c.id, c]))
-  const creativeById = new Map(creatives.map((c) => [c.id, c]))
-
-  const group = <T, K>(items: T[], key: (t: T) => K) => {
-    const m = new Map<K, T[]>()
-    for (const it of items) {
-      const k = key(it)
-      const arr = m.get(k)
-      if (arr) arr.push(it)
-      else m.set(k, [it])
-    }
-    return m
-  }
-  const campaignsByClient = group(campaigns, (c) => c.clientId)
-  const adSetsByCampaign = group(adSets, (a) => a.campaignId)
-  const adsByAdSet = group(ads, (a) => a.adSetId)
-  const adsByClient = group(ads, (a) => a.clientId)
-  const creativesByClient = group(creatives, (c) => c.clientId)
-  const insightsByAd = group(insights, (i) => i.adId)
-
-  // ---- derived statuses for ad sets / campaigns from recent volume ----
-  const recent = new Set(dates.slice(-7))
-  for (const adSet of adSets) {
-    if (adSet.status === 'PAUSED') continue
-    const adsIn = adsByAdSet.get(adSet.id) ?? []
-    let purchases7 = 0
-    let anyActive = false
-    for (const ad of adsIn) {
-      if (ad.status === 'ACTIVE' || ad.status === 'LEARNING') anyActive = true
-      for (const ins of insightsByAd.get(ad.id) ?? []) {
-        if (recent.has(ins.date)) purchases7 += ins.purchases
-      }
-    }
-    if (!anyActive) adSet.status = 'PAUSED'
-    else if (purchases7 < 13) adSet.status = 'LEARNING_LIMITED'
-    else adSet.status = 'ACTIVE'
-  }
-  for (const campaign of campaigns) {
-    const sets = adSetsByCampaign.get(campaign.id) ?? []
-    campaign.status = sets.some((s) => s.status === 'ACTIVE' || s.status === 'LEARNING_LIMITED') ? 'ACTIVE' : 'PAUSED'
-  }
-
-  return {
-    businessManagers: BUSINESS_MANAGERS,
-    clients,
-    accounts,
-    campaigns,
-    adSets,
-    ads,
-    creatives,
-    insights,
-    clientById,
-    accountByClient,
-    campaignsByClient,
-    adSetsByCampaign,
-    adsByAdSet,
-    adsByClient,
-    adById,
-    adSetById,
-    campaignById,
-    creativeById,
-    creativesByClient,
-    insightsByAd,
-  }
+  // Index-building + the volume-derived status post-pass live in the SHARED
+  // assembler (src/lib/dataset/assemble.ts) — the same code path the live
+  // provider uses, so demo and live snapshots are identical in shape. The demo
+  // opts INTO status derivation (it has no delivery telemetry); live supplies
+  // real effective_status/learning_stage_info instead.
+  return assembleDataset(
+    { businessManagers: BUSINESS_MANAGERS, clients, accounts, campaigns, adSets, ads, creatives, insights },
+    { deriveStatuses: { recentDates: dates.slice(-7) } },
+  )
 }

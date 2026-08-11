@@ -1,5 +1,5 @@
 import { getDataset } from '../demo/dataset'
-import { DATA_TODAY } from '../demo/generate'
+import { DATA_TODAY, WINDOW_DAYS } from '../demo/generate'
 import type { ActionRequest, ActionResult, DataProvider, Snapshot } from './types'
 
 /** In-memory provider backed by the deterministic demo dataset.
@@ -10,7 +10,7 @@ export class DemoProvider implements DataProvider {
 
   async loadSnapshot(): Promise<Snapshot> {
     const ds = getDataset()
-    return { ...ds, mode: 'demo', generatedAt: DATA_TODAY }
+    return { ...ds, mode: 'demo', generatedAt: DATA_TODAY, dataAnchor: DATA_TODAY, windowDays: WINDOW_DAYS }
   }
 
   async checkConnection() {

@@ -13,6 +13,7 @@ export const OBJECTIVE_LABEL: Record<CampaignObjective, string> = {
   OUTCOME_TRAFFIC: 'Traffic',
   OUTCOME_AWARENESS: 'Awareness',
   OUTCOME_ENGAGEMENT: 'Engagement',
+  OUTCOME_APP_PROMOTION: 'App promo',
 }
 
 export const OPT_GOAL_LABEL: Record<OptimizationGoal, string> = {

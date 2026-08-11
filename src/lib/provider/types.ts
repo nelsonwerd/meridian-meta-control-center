@@ -18,6 +18,12 @@ export type ProviderMode = 'demo' | 'live'
 export interface Snapshot extends Dataset {
   mode: ProviderMode
   generatedAt: string
+  /** The date the whole app treats as "now" (metrics.setDataContext). Demo pins
+   *  the seeded anchor; live carries the real load date so every window —
+   *  presets, engine scoring, pacing, weekly report — slices real data. */
+  dataAnchor: string
+  /** Days of insight history in this snapshot (demo 90; live per LiveConfig). */
+  windowDays: number
 }
 
 export interface ActionRequest {

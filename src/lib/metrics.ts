@@ -105,11 +105,28 @@ export function deltaIsGood(d: KpiDelta): boolean | null {
 }
 
 /* ============================================================================
-   Date helpers — DATA_TODAY is "now".
+   Date helpers — the DATA ANCHOR is "now".
+
+   Every window in the app (range presets, the engine's lastNDays scoring, month
+   pacing, the weekly report, the custom-range picker bounds) hangs off today().
+   The anchor is provider-owned: demo pins it to DATA_TODAY so the seeded story
+   is stable; live sets it to the real "today" of the loaded snapshot. Without
+   this seam, live insights (real dates) would fall entirely outside every
+   demo-anchored window and the app would render a convincing all-zero shell.
    ========================================================================== */
 
+let dataAnchor: ISODate = DATA_TODAY
+let dataWindowDays: number = WINDOW_DAYS
+
+/** Set by the store when a snapshot loads (demo → DATA_TODAY/90; live → the
+ *  snapshot's real anchor + configured window). */
+export function setDataContext(anchor: ISODate, windowDays: number) {
+  dataAnchor = anchor
+  dataWindowDays = windowDays
+}
+
 export function today(): ISODate {
-  return DATA_TODAY
+  return dataAnchor
 }
 
 export function enumerateDates(start: ISODate, end: ISODate): ISODate[] {
@@ -169,16 +186,17 @@ export function previousRange(range: DateRange): DateRange {
   return { preset: 'custom', start: prevStart, end: prevEnd, label: 'Previous period' }
 }
 
-export const earliestDate = (): ISODate => addDays(DATA_TODAY, -(WINDOW_DAYS - 1))
+export const earliestDate = (): ISODate => addDays(today(), -(dataWindowDays - 1))
 
 /* ----- formatting ----- */
 
 export function fmtShort(iso: ISODate): string {
-  const d = new Date(iso + 'T00:00:00Z')
+  // slice(0,10) tolerates full ISO timestamps (a live snapshot's generatedAt)
+  const d = new Date(iso.slice(0, 10) + 'T00:00:00Z')
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
 }
 
 export function fmtFull(iso: ISODate): string {
-  const d = new Date(iso + 'T00:00:00Z')
+  const d = new Date(iso.slice(0, 10) + 'T00:00:00Z')
   return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
 }

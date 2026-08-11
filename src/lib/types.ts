@@ -74,6 +74,7 @@ export type CampaignObjective =
   | 'OUTCOME_TRAFFIC'
   | 'OUTCOME_AWARENESS'
   | 'OUTCOME_ENGAGEMENT'
+  | 'OUTCOME_APP_PROMOTION'
 
 export type BidStrategy =
   | 'LOWEST_COST_WITHOUT_CAP'

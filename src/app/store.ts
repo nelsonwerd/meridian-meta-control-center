@@ -8,7 +8,7 @@ import {
   type ProviderMode,
   type Snapshot,
 } from '../lib/provider'
-import { makeRange } from '../lib/metrics'
+import { makeRange, setDataContext } from '../lib/metrics'
 import { loadThresholds, resetThresholds as applyResetThresholds, setActiveClientThresholds, setThreshold as applyThreshold } from '../lib/ai/thresholds'
 import { createConfigStore, type ClientConfig, type ClientTargets } from '../lib/config'
 import { createHistoryStore, type DecisionAction } from '../lib/history'
@@ -177,10 +177,18 @@ export const useStore = create<MeridianState>((set, get) => ({
     try {
       const snapshot = await get().provider.loadSnapshot()
       const clientConfig = await configStore.load()
-      captureBaseTargets(snapshot) // pristine seeded targets (once)
+      // Anchor every date window (presets, engine lastNDays, pacing, weekly
+      // report, custom-range bounds) to THIS snapshot's "now" + history depth —
+      // demo pins the seeded anchor; live carries the real load date. Then
+      // re-derive the active range against the new anchor (a demo-anchored
+      // range would slice live data to empty, and vice versa).
+      setDataContext(snapshot.dataAnchor, snapshot.windowDays)
+      const preset = get().range.preset
+      const range = makeRange(preset === 'custom' ? '28d' : preset)
+      captureBaseTargets(snapshot) // pristine seeded targets (once per dataset)
       applyConfigInPlace(snapshot, clientConfig) // overlay per-client target overrides
       setActiveClientThresholds(clientConfig) // expose per-client threshold overrides to the engine
-      set({ snapshot, clientConfig, loading: false })
+      set({ snapshot, clientConfig, range, loading: false })
     } catch (e) {
       set({ error: (e as Error).message, loading: false })
     }
@@ -190,6 +198,10 @@ export const useStore = create<MeridianState>((set, get) => ({
     persistMode(mode)
     // Reset the per-session action log/sets (they key off the old dataset) and swap
     // the provider, then re-init to load the new snapshot in place.
+    // baseClientTargets MUST be invalidated: it captured the OLD dataset's
+    // targets, and applyConfigInPlace would silently reset the new snapshot's
+    // clients (live!) back to the previous mode's baselines on any id collision.
+    baseClientTargets = null
     set({
       providerMode: mode,
       provider: createProvider(mode),
