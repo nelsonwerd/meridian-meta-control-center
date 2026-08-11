@@ -8,6 +8,10 @@ One cockpit across every client and Business Manager · KPI dashboards down to t
 creative · an AI analyst that scores the data and proposes one-click optimizations
 · designed weekly Monday reports.
 
+<br />
+
+<img src="docs/screenshots/overview.png" alt="Meridian Command Overview — cross-client KPIs, the Watchtower anomaly feed, a blended performance trend, and spend allocation by client" width="900">
+
 </div>
 
 ---
@@ -40,6 +44,17 @@ npm run lint     # typecheck only
 | **Weekly Report** — designed Monday report per client + portfolio digest | `/report` |
 | **Clients** — directory grouped by Business Manager | `/clients` |
 | **Settings** — Meta connection, ad-account mapping, AI + thresholds | `/settings` |
+
+## Screens
+
+<sub>Shown in demo mode — the seeded dataset of fictional clients with deterministic numbers. Click any image for full resolution.</sub>
+
+|  |  |
+| :--: | :--: |
+| <a href="docs/screenshots/recommendations.png"><img src="docs/screenshots/recommendations.png" alt="Recommendations — the AI analyst scores the last 7 days and proposes filterable, one-click actions" width="440"></a> | <a href="docs/screenshots/creative-lab.png"><img src="docs/screenshots/creative-lab.png" alt="Creative Lab — cohort performance by angle, a double-down / retire briefing, and the next test batch" width="440"></a> |
+| **Recommendations** — the AI analyst scores delivery and proposes filterable, one-click actions | **Creative Lab** — cohort analysis by angle, funnel diagnosis, and the next test batch to brief |
+| <a href="docs/screenshots/weekly-report.png"><img src="docs/screenshots/weekly-report.png" alt="Weekly Reports — one designed Monday digest per client, with a written headline and week-over-week deltas" width="440"></a> | <a href="docs/screenshots/clients.png"><img src="docs/screenshots/clients.png" alt="Clients — the book of business grouped by Business Manager, each with a spend sparkline and KPIs" width="440"></a> |
+| **Weekly Reports** — a designed Monday digest per client, headline written from the data | **Clients** — the book of business, grouped by Business Manager |
 
 ## Architecture (built to "turn the lights on")
 
