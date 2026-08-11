@@ -4,6 +4,9 @@ import { fileURLToPath, URL } from 'node:url'
 
 // https://vitejs.dev/config/
 export default defineConfig({
+  // Served from '/' locally and on any normal host. The GitHub Pages demo build
+  // sets BASE_PATH=/<repo>/ so assets and the router resolve under the subpath.
+  base: process.env.BASE_PATH ?? '/',
   plugins: [react()],
   resolve: {
     alias: {

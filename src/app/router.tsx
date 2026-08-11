@@ -24,5 +24,8 @@ export const router = createBrowserRouter([
     ],
   },
 ], {
+  // '/' in dev and normal deploys; '/<repo>/' for the GitHub Pages demo (Vite
+  // injects BASE_URL from the build's `base`), so deep links work either way.
+  basename: import.meta.env.BASE_URL,
   future: { v7_relativeSplatPath: true },
 })

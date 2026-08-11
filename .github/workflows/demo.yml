@@ -1,0 +1,52 @@
+name: Deploy demo to GitHub Pages
+
+# Publishes DEMO MODE only — a static build with the seeded, synthetic dataset.
+# No secrets are involved: live mode needs the token proxy (server/proxy.mjs),
+# which is not deployed here, so the published site can only ever show demo data.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never cancel a running deploy; queue instead.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - uses: actions/configure-pages@v5
+      - run: npm ci
+      - name: Build demo (subpath-aware)
+        run: npm run build
+        env:
+          BASE_PATH: /${{ github.event.repository.name }}/
+      # GitHub Pages has no SPA rewrite: serving index.html as the 404 page lets
+      # client-side routes (/recommendations, /creatives, …) resolve on refresh.
+      - run: cp dist/index.html dist/404.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
