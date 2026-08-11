@@ -53,12 +53,18 @@ npm run dev
    account id + business id, save, then **Check proxy & token** → flip to
    **Live (Meta API)**.
 
-Prerequisites (Meta app, System User token, Partner access for client-owned BMs,
-multi-token routing, single-process production deploys, the optional Claude
-narrative layer) are in **[`docs/META_INTEGRATION.md`](docs/META_INTEGRATION.md)**
-— including the go-live checklist of checks only a real account can pass.
-Budget/pause writes always require an explicit in-app confirm and are never
-auto-run.
+**If the ad accounts belong to your own business, that's genuinely all** — Meta
+requires **no App Review and no Business Verification** to use `ads_management` +
+`ads_read` against accounts you own or admin (you're rate-limited, not blocked).
+Agencies connecting *clients'* accounts need partner asset sharing and should
+plan on App Review + Business Verification for the throughput.
+
+Both paths — plus the System User setup, per-BM token routing, single-process
+production deploys, and the optional Claude narrative layer — are in
+**[`docs/META_INTEGRATION.md`](docs/META_INTEGRATION.md)** (audited against
+Meta's docs 2026-08-11), along with the go-live checklist of the checks only a
+real account can pass. Budget/pause writes always require an explicit in-app
+confirm and are never auto-run.
 
 ## What's inside
 

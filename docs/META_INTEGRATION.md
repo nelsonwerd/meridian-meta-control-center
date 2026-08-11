@@ -1,10 +1,20 @@
 # Turning the lights on — Meta API integration guide
 
-This is the playbook for moving Meridian from **demo data** to **live Meta data +
-write actions**. The app is built around clean seams so this is a *wiring*
-exercise, not a rewrite. Everything below is grounded in the deep-dive research
-(`docs/research/meta-marketing-api.md`) — re-verify version-specific details
-against developers.facebook.com before go-live.
+The playbook for pointing Meridian at **your real Meta ad accounts**. The live
+integration is built; this is the wiring.
+
+**Two paths, and they differ a lot** — §1 splits them:
+
+- **Solo / in-house**, connecting ad accounts your own business owns → **no App
+  Review, no Business Verification.** You can be live today.
+- **Agency**, connecting clients' accounts shared to you → partner setup, and
+  plan on App Review + Business Verification for throughput.
+
+> **Audited 2026-08-11** against developers.facebook.com (access tiers, scopes,
+> system users, asset sharing, rate limits, 2026 breaking changes). Claims that
+> Meta's public docs leave ambiguous are marked with a confidence note rather
+> than smoothed over. Meta changes things — re-verify before go-live. Deeper API
+> reference: [`research/meta-marketing-api.md`](research/meta-marketing-api.md).
 
 ---
 
@@ -24,33 +34,87 @@ selects the implementation.
 
 ---
 
-## 1. Meta app + access (the multi-BM model)
+## 1. Meta app + access
 
-Meridian's whole premise is one agency seeing many clients across **multiple
-Business Managers**. The access model that makes this work without per-client
-OAuth:
+> Verified against developers.facebook.com on **2026-08-11**. Meta moves; re-check
+> before go-live. Confidence is marked where their own docs are ambiguous.
 
-1. **Create a Meta app** in the agency's Business Manager. Request scopes:
-   `ads_management`, `ads_read`, `business_management`, `read_insights`,
-   `pages_read_engagement`, `pages_show_list`. All are **Advanced Access** →
-   require **App Review + Business Verification**.
-2. **Create a System User** in the agency BM and generate a long-lived
-   (or non-expiring) token: `POST /{system-user-id}/access_tokens`.
-3. For clients **inside the agency BM**: assign the system user to their ad
-   accounts directly.
-4. For clients on their **own Business Managers**: the client adds the agency BM
-   as a **Partner** and shares the ad account / Page / pixel. The agency then
-   assigns its system user to those shared assets. **One token now fans out
-   across every client** — agency-owned and partner alike.
+**There are two very different setups, and only one of them needs App Review.**
+Read the path that matches you.
 
-Store the token(s) **server-side** (a secret store / backend env), never in the
-browser. The `LiveAccountConfig` shape in `liveProvider.ts` carries a per-account
-token so partner BMs with their own tokens are supported; most setups use the one
-agency system-user token as `defaultAccessToken`.
+### Path A — Solo / in-house: your own ad accounts (no App Review)
 
-> ⚠️ The browser SPA must not hold the token in production. Put a thin backend
-> proxy in front of the Graph API (see §5) — the `LiveProvider` `fetch` calls
-> then target your proxy, which injects the token server-side.
+If every ad account you'll connect is owned or administered by **your own**
+Business Manager, you do **not** need App Review and you do **not** need Business
+Verification. Meta's own words: *"If your app is only managing your ad account,
+standard access to the `ads_read` and `ads_management` permissions are
+sufficient"*, and App Review / Business Verification are not required for apps
+used only by people with a role on the app itself.
+
+1. **Create a Meta app** (Business type) and request just two scopes:
+   **`ads_management`** and **`ads_read`**. That's the whole surface Meridian
+   uses — reads and the `status`/`daily_budget` writes.
+2. **Create a System User** in Business settings → Users → System users, and
+   generate a token scoped to those two permissions (UI, or
+   `POST /{system-user-id}/access_tokens`). Use a **regular** system user, not
+   an admin one — Meta advises keeping admin system users for provisioning only.
+3. Assign that system user to each ad account with the task it needs (below).
+4. Put the token in the proxy's `META_SYSTEM_TOKEN` (§5). Done — you can run
+   Meridian against your real accounts today.
+
+**The catch is throughput, not permission.** Un-reviewed apps sit on the
+**Limited** access tier (renamed from *Standard* on 2026-05-04), which is
+rate-limited *per ad account per hour* and is explicitly *"for development only,
+not for production apps running for live advertisers"*:
+
+| Tier | ads_management calls/hr | ads_insights calls/hr | System users |
+|---|---|---|---|
+| **Limited** (default, no review) | 300 + 40 × active ads | 600 + 400 × active ads | 1 + 1 admin |
+| **Full** (after review) | 100,000 + 40 × active ads | 190,000 + 400 × active ads | 10 + 1 admin |
+
+For one operator watching a handful of accounts on Meridian's on-demand loads,
+Limited is usually fine. Apps can be auto-promoted to Full after sustained
+healthy usage (as of 2026-05-04: ~500 calls / 15 days with a <15% error rate).
+
+### Path B — Agency: clients' accounts on their own Business Managers
+
+1. The **client** adds your business as a **Partner** in their Business settings
+   (now labelled *business portfolio* in Meta's UI) and shares the ad account,
+   entering **your business ID**. The API equivalent (`POST /act_{id}/agencies`)
+   has been access-restricted since 2021, so this is a UI step in practice.
+2. **You** assign your system user to each shared account —
+   `POST /act_{id}/assigned_users` with `user`, `tasks`, `business` — after which
+   **one token fans out across every client**, agency-owned and partner alike.
+3. Task level needed (from Meta's task definitions; they never map tasks to
+   specific fields, so this is inferred — *medium confidence*, start narrow and
+   widen if a call 403s):
+   - **`ANALYZE`** — read insights (Meridian's dashboards/reports).
+   - **`ADVERTISE`** — additionally pause/activate and change budgets.
+   - `MANAGE` is **not** required (that's billing and permissions).
+
+> ⚠️ **Agencies should plan on App Review + Business Verification.** Meta's docs
+> are genuinely ambiguous on whether a *partner-shared* account managed by your
+> own system user counts as "your" account for authorization purposes — one page
+> says App Review isn't needed for apps used within a business that claimed the
+> app, another says *"if your app is managing other people's ad accounts, you
+> need advanced access."* **We could not resolve this from public docs
+> (low confidence).** In practice the question is moot: the Limited tier's
+> 300 calls/hour/account and **one** system user won't run an agency, and Meta
+> disclaims Limited for live advertisers — so you'll want **Full** access, which
+> requires the app to be connected to a **Business-Verified** business. Budget
+> real calendar time for that; it is separate from App Review.
+
+### Token handling (both paths)
+
+Tokens live **only** in the proxy's environment (§5) — `META_SYSTEM_TOKEN`, plus
+`META_TOKENS` if a partner BM issues you its own token. The browser never holds
+one, the saved account mapping never contains one, and the proxy rejects any
+request that tries to supply one.
+
+> ⚠️ System-user tokens are **non-expiring by default**. If you opt into 60-day
+> tokens (`set_token_expires_in_60_days=true` — Meta's security recommendation),
+> you must refresh before day 60 or the token is forfeit. Rotate/revoke
+> (`GET /oauth/revoke`) when someone leaves the team.
 
 ## 2. Map clients → ad accounts
 
@@ -61,18 +125,29 @@ no tokens in it, ever:
 
 ```ts
 {
-  defaultAccessToken: '<agency system-user token, server-side>',
   accounts: [
-    { clientId: 'c_lumiere', adAccountId: 'act_123…', businessId: '228…', accessToken: '' },
+    {
+      clientId: 'c_lumiere',
+      adAccountId: 'act_123…',      // real act_ id
+      businessId: '228…',           // routes to this BM's token in the proxy
+      businessName: 'Lumière Beauty',
+      businessType: 'partner',      // 'agency' | 'partner' — groups the directory
+      purchaseActionType: '',       // blank = omni_purchase
+    },
     …
   ],
   clients: [ /* targets, AOV, margin — data the API doesn't carry */ ],
-  windowDays: 90,
+  windowDays: 90,                   // minimum 56 (see §3)
 }
 ```
 
+**No tokens appear in this config, by design** — the proxy owns them, keyed by
+`businessId`. (The `LiveConfig` type still carries deprecated `accessToken` /
+`defaultAccessToken` fields so older saved configs keep parsing; nothing reads
+them.)
+
 Targets (CPA/ROAS), AOV, and contribution margin are **business inputs**, not API
-fields — they live in this config (seeded today from `catalog.ts`).
+fields — they live in this config, editable in Settings → Targets & tuning.
 
 ## 3. Pull structure + insights — BUILT (2026-08-11, Graph v26.0)
 
@@ -90,9 +165,18 @@ same `Dataset` shape demo uses.
   nested `actions`/`action_values` arrays by `action_type`. Default
   **`omni_purchase`** (fallback `offsite_conversion.fct.purchase`);
   per-account override in Settings → mapping → "Purchase event".
-- **Async report jobs**: windows > 35 days POST the insights query → poll the
-  `report_run_id` gated STRICTLY on `async_status === "Job Completed"` (the
-  percent field can read 100 while still running) → fetch the rows.
+- **Async report jobs**: windows longer than 60 days POST the insights query →
+  poll the `report_run_id` gated STRICTLY on `async_status === "Job Completed"`
+  (the percent field can read 100 while still running) → fetch the rows.
+- **Window floor**: the pull is clamped to **≥ 56 days** regardless of the
+  configured `windowDays`. The default dashboard view is the 28-day preset, whose
+  previous-period comparison reaches back to day 56 — a shorter pull would
+  silently fabricate deltas, understate frequency and month pacing, and starve
+  the fatigue rule's baseline.
+- **Breakdowns**: Meridian requests **none**. (Relevant because since 2026-08-06
+  `impression_device`, `hourly_stats_aggregated_by_audience_time_zone` and
+  `frequency_value` breakdowns require a per-account opt-in in Ads Manager and
+  otherwise return no rows *silently* — Meridian is unaffected.)
 - **Attribution**: no custom `action_attribution_windows` are requested — the
   default (7d-click + 1d-view) is Ads-Manager parity, and Meta disregards the
   unified-attribution override params since 2025-06-10. Never request
@@ -101,11 +185,18 @@ same `Dataset` shape demo uses.
 
 ## 4. Write actions
 
-`LiveProvider.applyAction()` is implemented for the common writes:
+`LiveProvider.applyAction()` implements exactly two writes — that is the whole
+live mutation surface, deliberately:
 
 - **Pause / activate**: `POST /{entity_id}` with `status=PAUSED|ACTIVE`.
-- **Budget change**: `POST /{entity_id}` with `daily_budget` (or `lifetime_budget`).
-- **Bid**: `bid_amount` (+ `bid_strategy`).
+- **Budget change**: `POST /{campaign_or_adset_id}` with `daily_budget`, routed
+  to the CBO campaign or the ABO ad set depending on where the budget lives.
+
+Everything else a suggestion can propose (duplicate, consolidate, brief a
+creative) is refused by `applyAction` with a clear message rather than POSTed —
+they aren't single-field writes. Bid changes and `lifetime_budget` are **not**
+implemented. Writes require an explicit two-step confirm in the UI that names
+live mode and warns there is no undo; nothing is ever auto-applied.
 
 > ⚠️ Budgets/bids POST in **minor currency units**. NB `currency_offset` is
 > **not a field on the AdAccount node** (verified 2026-08-11) — Meridian derives
@@ -288,16 +379,26 @@ Machine-done (2026-08-11): ~~backend proxy~~ · ~~browser token removed~~ ·
 ~~attribution stance~~ · ~~API pinned v26.0~~ · ~~narrate route + toggle~~.
 Remaining — every box below needs YOU (real credentials / real accounts):
 
-- [ ] App created, 6 scopes approved via App Review + Business Verification
-- [ ] System user + long-lived token, set as `META_SYSTEM_TOKEN` on the proxy
-- [ ] Partner access accepted for client-owned BMs; per-BM tokens in `META_TOKENS`
+**Everyone**
+- [ ] Meta app created; **two** scopes requested: `ads_management`, `ads_read`
+- [ ] Regular (non-admin) System User + token, set as `META_SYSTEM_TOKEN` on the proxy
+- [ ] System user assigned to each ad account (`ANALYZE` to read, `ADVERTISE` to write)
 - [ ] Real `act_`/business ids entered in Settings → Live ad account mapping
-- [ ] 🚪 `/healthz` green; Test Meta connection green
+- [ ] 🚪 `/healthz` green; "Test Meta connection" green
 - [ ] 🚪 Flip to Live: campaigns/ads render; KPIs reconcile with Ads Manager
-- [ ] 🚪 A known fatigued/learning-limited entity surfaces correctly
-- [ ] 🚪 One real pause + budget change on a SANDBOX/lowest-spend ad
+- [ ] 🚪 A known fatigued / learning-limited entity surfaces correctly
+- [ ] 🚪 One real pause + budget change on a SANDBOX or lowest-spend ad
 - [ ] Conversion event confirmed per account (`omni_purchase` vs pixel/custom)
 - [ ] (Optional) `ANTHROPIC_API_KEY` on the proxy + "LLM enriched" toggled on
+
+**Agencies additionally** (Path B, §1)
+- [ ] Each client added your business as a Partner and shared their ad account
+- [ ] Per-BM tokens in `META_TOKENS` if a client issues you its own
+- [ ] Business Verification completed, and Full access obtained (App Review) —
+      the Limited tier's 300 calls/hr/account + 1 system user won't carry an agency
+
+**Solo / in-house (Path A): App Review and Business Verification are _not_
+required** for accounts your own business owns — skip those two boxes entirely.
 - [ ] `client_config` + `decision_log` tables provisioned with `workspace_id` tenancy (RLS)
 - [ ] Config + history API endpoints live; `ConfigStore`/`HistoryStore` repointed from `localStorage` to fetch
 - [ ] Live outcome-capture job scheduled (back-fills `decision_log.outcome` + `outcome_captured_at`)

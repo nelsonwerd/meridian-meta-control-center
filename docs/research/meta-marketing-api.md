@@ -2,7 +2,25 @@
 
 > Internal engineering reference for the Autopilot Meta Control Center — an agency tool that reads from and writes to the Meta Marketing API for DTC/ecommerce clients optimizing for orders at low CPA.
 >
-> **Compiled:** 2026-06-17 · **Target API version:** **v25.0** (current GA) · Most field/enum content is version-stable.
+> **Compiled:** 2026-06-17 · **Target API version at compile time:** v25.0 · Most field/enum content is version-stable.
+>
+> ### ⚠️ Partially superseded — re-audited 2026-08-11
+> This remains the deep field/enum reference, but four things have changed or were
+> refined since it was compiled. **For setup and auth,
+> [`../META_INTEGRATION.md`](../META_INTEGRATION.md) §1 is authoritative.**
+>
+> | Here | Corrected |
+> |---|---|
+> | "The six scopes needed" (§4.3) | Meridian's actual surface (ad reads + `status`/`daily_budget` writes) needs **`ads_management` + `ads_read` only**. `business_management`, `read_insights`, `pages_read_engagement`, `pages_show_list` are not used — over-requesting widens App Review scope for nothing. |
+> | "agency needs … App Review" as the blanket rule (§4.3) | Correct for agencies. **Not** for solo/in-house operators: for ad accounts your own business owns, Standard access to `ads_management`/`ads_read` needs **no App Review and no Business Verification**. |
+> | Rate-limit tier named "*development* vs *Standard*" (§4.3) | Renamed **2026-05-04**: *Limited* (default) vs *Full*. Numbers below still hold. The permission-level *Standard vs Advanced Access* axis was **not** renamed — the two-axis warning in §4.3 is correct and worth reading. |
+> | `currency_offset` read from the ad account (§7.3) | **Not a field on the AdAccount node.** Derive from `currency` via Meta's currencies table — and note **HUF/TWD are offset 1** at Meta despite ISO-4217. |
+>
+> Target version is now **v26.0** (GA 2026-07-29). Also since compile: v24.0 sunsets
+> 2026-10-06; `breakdowns=dma` → `comscore_market` (2026-06-22); `impression_device`,
+> `hourly_stats_aggregated_by_audience_time_zone` and `frequency_value` breakdowns
+> need per-account Ads Manager opt-in since 2026-08-06 and otherwise return no rows
+> silently (Meridian requests no breakdowns, so it is unaffected).
 >
 > **Sourcing & honesty:** Field names and enum string values were drawn primarily from Meta's auto-generated **Business SDKs** (`facebook-python-business-sdk`, `facebook-nodejs-business-sdk` on GitHub) — the most reliable machine-readable mirror of Meta's internal schema — and cross-checked against the official `developers.facebook.com` docs and Meta's developer blog. Several official reference pages are JS-rendered SPAs that truncate or 404 to automated fetchers; where a detail could not be quoted verbatim it is flagged. Genuinely uncertain items are marked **⚠️** inline. Console UI labels drift over time; treat them as "current layout," not contractual.
 
@@ -551,7 +569,13 @@ POST /{AD-ACCOUNT-ID}/assigned_users
 
 ### 4.3 Permissions & access tiers
 
-The six scopes needed are all **Advanced Access** (require App Review to use against outside accounts):
+> ⚠️ **Corrected 2026-08-11 — see the banner at the top of this file.** The list
+> below is the *superset* an agency Page-linked build might touch. **Meridian
+> itself needs only `ads_management` + `ads_read`**, and a solo operator working
+> on their own business's ad accounts needs **no App Review / Business
+> Verification** at all. Authoritative: [`../META_INTEGRATION.md`](../META_INTEGRATION.md) §1.
+
+These scopes are all **Advanced Access** (require App Review to use against outside accounts):
 
 | Scope | Grants |
 |---|---|
@@ -779,7 +803,7 @@ New version every ~3–4 months; supported ~2 years before deprecation. Always p
 
 ## 8. Confidence & Honesty Notes
 
-**High confidence (verified this session):** v25.0 version table + dates; the internal-vs-UI node naming; `act_`-only ID prefix rule; the 6 ODAX objectives; `status` vs read-only `effective_status` and their enums; the 4 `bid_strategy` values + how `bid_amount` applies only to capped strategies; objective immutability; single-field POST mutation pattern; the System-User auth model + `assigned_users` + token-generation calls; the six required scopes are Advanced Access; the multi-BM Partner-sharing model; BUC header structure (`estimated_time_to_regain_access` in minutes, throttle at 100); 50-sub-request non-transactional batch + `{result=name:$.path}`; `async_status` enum + ~30-day `report_run_id` expiry; `currency_offset` (USD 100 / JPY 1); the **Jan 12, 2026 removal of `7d_view`/`28d_view`**; ARCHIVED/DELETED default exclusion; that **no scalar purchases/revenue field exists**.
+**High confidence (verified this session):** v25.0 version table + dates; the internal-vs-UI node naming; `act_`-only ID prefix rule; the 6 ODAX objectives; `status` vs read-only `effective_status` and their enums; the 4 `bid_strategy` values + how `bid_amount` applies only to capped strategies; objective immutability; single-field POST mutation pattern; the System-User auth model + `assigned_users` + token-generation calls; ~~the six required scopes are Advanced Access~~ *(corrected 2026-08-11 — Meridian needs only `ads_management`+`ads_read`, and own-account use needs no review; see the banner)*; the multi-BM Partner-sharing model; BUC header structure (`estimated_time_to_regain_access` in minutes, throttle at 100); 50-sub-request non-transactional batch + `{result=name:$.path}`; `async_status` enum + ~30-day `report_run_id` expiry; ~~`currency_offset` (USD 100 / JPY 1)~~ *(the VALUES are right; corrected 2026-08-11 — it is not an AdAccount field, derive from `currency`; HUF/TWD are offset 1)*; the **Jan 12, 2026 removal of `7d_view`/`28d_view`**; ARCHIVED/DELETED default exclusion; that **no scalar purchases/revenue field exists**.
 
 **Moderate / flagged ⚠️:** legacy→ODAX split mappings (`MESSAGES`, `CONVERSIONS`); `buying_type` values (no SDK enum); exact `effective_status` membership (well-established but Meta tables resisted scraping); precise rate-limit *constants* (a model, not an SLA — trust the headers); zero-decimal currency list membership (esp. TWD/HUF — verify per-account via `currency_offset`); exact async poll interval; system-user per-tier limits (have changed historically); breakdown-combination compatibility matrix (version-dependent — treat as runtime data); `last_60d` is not a valid preset; `action_target_id` supported but not in SDK's primary enum.
 
