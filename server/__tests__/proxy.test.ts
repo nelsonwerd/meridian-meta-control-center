@@ -51,6 +51,8 @@ function listen(server: http.Server): Promise<number> {
 
 const TOKEN = 'TESTTOKEN_abc123'
 const PARTNER_TOKEN = 'PARTNERTOKEN_xyz789'
+// Every /api/* route requires the CSRF guard header (see proxy: X-Meridian-Client)
+const CSRF = { 'x-meridian-client': '1' }
 
 describe('proxy pure helpers', () => {
   it('isValidMetaPath accepts version-prefixed Graph paths only', () => {
@@ -65,25 +67,31 @@ describe('proxy pure helpers', () => {
     expect(isValidMetaPath('v25.0/a'.padEnd(600, 'a'))).toBe(false)
   })
 
-  it('redactToken strips every occurrence', () => {
-    const body = `{"paging":{"next":"https://graph/x?access_token=${TOKEN}&after=z"},"again":"${TOKEN}"}`
-    const out = redactToken(body, TOKEN)
-    expect(out).not.toContain(TOKEN)
+  it('redactToken strips every occurrence, including the percent-encoded form', () => {
+    const weird = 'TOK|EN+with special'
+    const body = `{"paging":{"next":"https://graph/x?access_token=${encodeURIComponent(weird)}&after=z"},"again":"${weird}"}`
+    const out = redactToken(body, weird)
+    expect(out).not.toContain(weird)
+    expect(out).not.toContain(encodeURIComponent(weird))
     expect(out).toContain('REDACTED')
   })
 
-  it('parseBucHeader reads the worst bucket', () => {
+  it('parseBucHeader reads the worst bucket across ALL entries (regain hint is MINUTES)', () => {
     const raw = JSON.stringify({
-      '123': [{ type: 'ads_insights', call_count: 12, total_cputime: 97, total_time: 30, estimated_time_to_regain_access: 4 }],
+      '123': [
+        { type: 'ads_management', call_count: 12, total_cputime: 20, total_time: 30, estimated_time_to_regain_access: 0 },
+        { type: 'ads_insights', call_count: 40, total_cputime: 97, total_time: 30, estimated_time_to_regain_access: 4 },
+      ],
     })
-    expect(parseBucHeader(raw)).toEqual({ maxPct: 97, regainSeconds: 4 })
+    // per Meta's rate-limiting reference, estimated_time_to_regain_access is minutes
+    expect(parseBucHeader(raw)).toEqual({ maxPct: 97, regainMinutes: 4 })
     expect(parseBucHeader(null)).toBeNull()
     expect(parseBucHeader('not json')).toBeNull()
   })
 
-  it('backoffDelayMs honours the regain hint but caps', () => {
-    expect(backoffDelayMs(0, 4, 8000)).toBe(4000)
-    expect(backoffDelayMs(1, undefined, 8000)).toBe(2000)
+  it('backoffDelayMs converts the MINUTES regain hint to ms, capped', () => {
+    expect(backoffDelayMs(0, 4, 300_000)).toBe(240_000) // 4 min → 240s
+    expect(backoffDelayMs(1, undefined, 8000)).toBe(2000) // exponential fallback
     expect(backoffDelayMs(3, 900, 8000)).toBe(8000) // capped
   })
 
@@ -107,6 +115,7 @@ describe('proxy HTTP behaviour', () => {
       META_TOKENS: JSON.stringify({ biz_partner: PARTNER_TOKEN }),
       META_GRAPH_BASE: `http://127.0.0.1:${upPort}`,
       ANTHROPIC_API_KEY: 'sk-ant-test',
+      ANTHROPIC_ALLOWED_MODELS: 'test-model',
       ANTHROPIC_BASE: `http://127.0.0.1:${upPort}`,
       BACKOFF_CAP_MS: '5', // keep retries instant in tests
     })
@@ -125,7 +134,7 @@ describe('proxy HTTP behaviour', () => {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ data: [{ id: 'c1' }] }))
     })
-    const res = await fetch(`${proxyBase}/api/meta/v25.0/act_1/campaigns?fields=name,objective&limit=200`)
+    const res = await fetch(`${proxyBase}/api/meta/v25.0/act_1/campaigns?fields=name,objective&limit=200`, { headers: CSRF })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ data: [{ id: 'c1' }] })
     const seen = upstream.last()
@@ -136,16 +145,17 @@ describe('proxy HTTP behaviour', () => {
 
   it('routes the partner token when X-Meta-Business-Id names a mapped business', async () => {
     await fetch(`${proxyBase}/api/meta/v25.0/act_9/adsets?fields=name`, {
-      headers: { 'x-meta-business-id': 'biz_partner' },
+      headers: { ...CSRF, 'x-meta-business-id': 'biz_partner' },
     })
     expect(upstream.last().url).toContain(`access_token=${PARTNER_TOKEN}`)
   })
 
   it('rejects a client-supplied access_token (GET query and POST body)', async () => {
-    const g = await fetch(`${proxyBase}/api/meta/v25.0/act_1/ads?access_token=SNEAKY`)
+    const g = await fetch(`${proxyBase}/api/meta/v25.0/act_1/ads?access_token=SNEAKY`, { headers: CSRF })
     expect(g.status).toBe(400)
     const p = await fetch(`${proxyBase}/api/meta/v25.0/120210001`, {
       method: 'POST',
+      headers: CSRF,
       body: new URLSearchParams({ status: 'PAUSED', access_token: 'SNEAKY' }),
     })
     expect(p.status).toBe(400)
@@ -153,7 +163,7 @@ describe('proxy HTTP behaviour', () => {
 
   it('rejects non-Graph-shaped paths', async () => {
     for (const bad of ['v25.0/..%2Fetc', 'nope', 'v25.0//x']) {
-      const res = await fetch(`${proxyBase}/api/meta/${bad}`)
+      const res = await fetch(`${proxyBase}/api/meta/${bad}`, { headers: CSRF })
       expect(res.status).toBe(400)
     }
   })
@@ -165,6 +175,7 @@ describe('proxy HTTP behaviour', () => {
     })
     const res = await fetch(`${proxyBase}/api/meta/v25.0/120210001`, {
       method: 'POST',
+      headers: CSRF,
       body: new URLSearchParams({ status: 'PAUSED' }),
     })
     expect(res.status).toBe(200)
@@ -181,7 +192,7 @@ describe('proxy HTTP behaviour', () => {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ data: [], paging: { next: `https://graph.facebook.com/x?access_token=${TOKEN}&after=zz` } }))
     })
-    const res = await fetch(`${proxyBase}/api/meta/v25.0/act_1/insights?fields=spend`)
+    const res = await fetch(`${proxyBase}/api/meta/v25.0/act_1/insights?fields=spend`, { headers: CSRF })
     const text = await res.text()
     expect(text).not.toContain(TOKEN)
     expect(text).toContain('REDACTED')
@@ -199,7 +210,7 @@ describe('proxy HTTP behaviour', () => {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ data: [{ ok: true }] }))
     })
-    const res = await fetch(`${proxyBase}/api/meta/v25.0/act_1/campaigns?fields=name`)
+    const res = await fetch(`${proxyBase}/api/meta/v25.0/act_1/campaigns?fields=name`, { headers: CSRF })
     expect(res.status).toBe(200)
     expect(calls).toBe(3)
   })
@@ -209,7 +220,7 @@ describe('proxy HTTP behaviour', () => {
       res.writeHead(429, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { code: 613, message: 'rate limited' } }))
     })
-    const res = await fetch(`${proxyBase}/api/meta/v25.0/act_1/campaigns?fields=name`)
+    const res = await fetch(`${proxyBase}/api/meta/v25.0/act_1/campaigns?fields=name`, { headers: CSRF })
     expect(res.status).toBe(429)
   })
 
@@ -235,7 +246,7 @@ describe('proxy HTTP behaviour', () => {
     })
     const res = await fetch(`${proxyBase}/api/ai/narrate`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...CSRF, 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'test-model', system: 's', messages: [{ role: 'user', content: 'u' }] }),
     })
     expect(res.status).toBe(200)
@@ -243,13 +254,85 @@ describe('proxy HTTP behaviour', () => {
   })
 
   it('narrate 400s on malformed body', async () => {
-    const res = await fetch(`${proxyBase}/api/ai/narrate`, { method: 'POST', body: 'not json' })
+    const res = await fetch(`${proxyBase}/api/ai/narrate`, { method: 'POST', headers: CSRF, body: 'not json' })
     expect(res.status).toBe(400)
   })
 
   it('404s unknown routes when not serving dist', async () => {
     const res = await fetch(`${proxyBase}/definitely-not-a-route`)
     expect(res.status).toBe(404)
+  })
+
+  it('403s /api/* without the CSRF guard header — GET, write POST, and narrate', async () => {
+    const g = await fetch(`${proxyBase}/api/meta/v25.0/act_1/campaigns?fields=name`)
+    expect(g.status).toBe(403)
+    const w = await fetch(`${proxyBase}/api/meta/v25.0/120210001`, { method: 'POST', body: new URLSearchParams({ status: 'PAUSED' }) })
+    expect(w.status).toBe(403) // the CSRF-relevant one: a drive-by write must never reach Graph
+    const n = await fetch(`${proxyBase}/api/ai/narrate`, { method: 'POST', body: '{}' })
+    expect(n.status).toBe(403)
+  })
+
+  it('narrate rejects models outside the allowlist and caps max_tokens', async () => {
+    const bad = await fetch(`${proxyBase}/api/ai/narrate`, {
+      method: 'POST',
+      headers: { ...CSRF, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-fable-5', messages: [{ role: 'user', content: 'x' }] }),
+    })
+    expect(bad.status).toBe(400)
+    expect(((await bad.json()) as { error: string }).error).toContain('not allowed')
+
+    upstream.setScript((req, res) => {
+      const body = JSON.parse(req.body)
+      expect(body.max_tokens).toBe(2000) // 999999 clamped to the cap
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ content: [{ type: 'text', text: 'ok' }] }))
+    })
+    const capped = await fetch(`${proxyBase}/api/ai/narrate`, {
+      method: 'POST',
+      headers: { ...CSRF, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'test-model', messages: [{ role: 'user', content: 'x' }], max_tokens: 999999 }),
+    })
+    expect(capped.status).toBe(200)
+  })
+})
+
+describe('proxy static serving (SERVE_DIST production mode)', () => {
+  it('serves exact files, falls back to index.html for SPA routes, blocks traversal', async () => {
+    const fs = await import('node:fs/promises')
+    const os = await import('node:os')
+    const pathMod = await import('node:path')
+    const dist = await fs.mkdtemp(pathMod.join(os.tmpdir(), 'meridian-dist-'))
+    await fs.writeFile(pathMod.join(dist, 'index.html'), '<!doctype html><title>app</title>')
+    await fs.mkdir(pathMod.join(dist, 'assets'))
+    await fs.writeFile(pathMod.join(dist, 'assets', 'app.js'), 'console.log(1)')
+
+    const server = createProxyServer(configFromEnv({ SERVE_DIST: '1', DIST_DIR: dist }))
+    const port = await listen(server)
+    const base = `http://127.0.0.1:${port}`
+    try {
+      const exact = await fetch(`${base}/assets/app.js`)
+      expect(exact.status).toBe(200)
+      expect(exact.headers.get('content-type')).toContain('javascript')
+      expect(await exact.text()).toBe('console.log(1)')
+
+      const spa = await fetch(`${base}/recommendations`) // client-side route
+      expect(spa.status).toBe(200)
+      expect(await spa.text()).toContain('<title>app</title>')
+
+      // Traversal attempts must never leak a file outside distDir. Encoded
+      // %2f is never decoded (the literal name misses → SPA fallback) and
+      // literal ../ is normalized away by URL parsing — either way the
+      // response must be the app shell, never /etc content.
+      for (const evil of ['/..%2f..%2fetc%2fpasswd', '/assets/..%2f..%2fsecret', '/../../../../etc/passwd']) {
+        const res = await fetch(`${base}${evil}`)
+        const text = await res.text()
+        expect(text, evil).not.toContain('root:')
+        if (res.status === 200) expect(text, evil).toContain('<title>app</title>') // fallback shell only
+      }
+    } finally {
+      server.close()
+      await fs.rm(dist, { recursive: true, force: true })
+    }
   })
 })
 
@@ -263,9 +346,9 @@ describe('proxy without tokens (unconfigured)', () => {
       const h = await fetch(`${base}/healthz`)
       expect(h.status).toBe(503)
       expect(((await h.json()) as { error: string }).error).toContain('META_SYSTEM_TOKEN')
-      const m = await fetch(`${base}/api/meta/v25.0/act_1/campaigns?fields=name`)
+      const m = await fetch(`${base}/api/meta/v25.0/act_1/campaigns?fields=name`, { headers: { 'x-meridian-client': '1' } })
       expect(m.status).toBe(503)
-      const n = await fetch(`${base}/api/ai/narrate`, { method: 'POST', body: '{}' })
+      const n = await fetch(`${base}/api/ai/narrate`, { method: 'POST', headers: { 'x-meridian-client': '1' }, body: '{}' })
       expect(n.status).toBe(503)
     } finally {
       server.close()

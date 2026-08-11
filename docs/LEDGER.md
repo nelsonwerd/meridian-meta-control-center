@@ -27,16 +27,33 @@
 | Settings (`/settings`) | screenshot: connection toggle, ad-account mapping, AI models, thresholds |
 | Global controls | scope switcher (portfolio/BM/client), date range incl. single-day edge case (no crash), dark+light theme toggle |
 
-## 🟡 Scaffolded for your API — real code, NOT executed (no credentials)
+## 🟡 Built and machine-verified — NOT yet run against real credentials
 
-| Thing | State | Where |
+> The live mile (P1–P7, 2026-08-11) is **implemented end-to-end and verified
+> against a faked Graph API in tests** — the throw is gone, the pipeline works.
+> "Machine-verified" means: 124 Vitest tests exercise it against realistic
+> v26-shaped fixtures and an in-process mock upstream, and the AI engine
+> produces correct findings from live-shaped data. It does **NOT** mean it has
+> ever touched a real ad account. Every row below carries a 🚪 human gate that
+> needs the operator's real token + account (see `META_INTEGRATION.md`).
+
+| Thing | State | 🚪 Human gate |
 |---|---|---|
-| `LiveProvider` insights pull | wired (correct endpoints/fields, pagination, `omni_purchase` extraction) — **not run** | `src/lib/provider/liveProvider.ts` |
-| `LiveProvider` structure→type mapping | **the remaining last-mile** — campaigns/adsets/ads/creatives mapping is stubbed; `loadSnapshot` throws a clear message there | same |
-| Write actions (pause/budget/bid POST) | implemented; `currency_offset` multiplier marked TODO | same |
-| Multi-BM auth (system user + partner) | modeled in `LiveConfig`; documented, not exercised | `liveProvider.ts`, `META_INTEGRATION.md` |
-| LLM narrative enrichment | prompt + request shape ready; `USE_LLM=false`, needs backend proxy | `src/lib/ai/llm.ts` |
-| Connection test / Settings save | calls real `checkConnection()`; fails gracefully without creds | `SettingsScreen.tsx` |
+| Backend token proxy (`server/proxy.mjs`) | zero-dep Node server: token injection, per-business routing, BUC backoff, token redaction, /healthz, static prod serving; 18 tests vs a mock upstream | set `META_SYSTEM_TOKEN`, confirm `/healthz` returns your identity |
+| `LiveProvider.loadSnapshot` (structure + insights) | full pull→map→assemble pipeline; v26; statuses/learning normalized; period-true reach; integration-tested vs a fake Graph | map one real account, flip to Live, see real campaigns render |
+| Insights correctness | per-account purchase event, async report jobs (gated on `Job Completed`), Ads-Manager-default attribution | reconcile spend/orders/CPA/ROAS vs Ads Manager for one account+range |
+| Reach/frequency engine inputs | true de-duplicated period reach per canonical window; never blended with additive | confirm a known-fatigued entity surfaces in the live feed |
+| Write actions (pause/budget POST) | via proxy, minor units from the corrected per-currency map (HUF/TWD=1), success:false detection, live-explicit confirm, **no auto-run ever** | one real pause + one budget change on a SANDBOX/lowest-spend ad |
+| LLM narrative enrichment | `/api/ai/narrate` proxy route + client wiring (claude-sonnet-5 / claude-opus-5); opt-in toggle, off by default | set `ANTHROPIC_API_KEY`, enable in Settings, see enriched prose |
+| Multi-BM auth (system user + partner) | routed server-side via `META_TOKENS` keyed by business id | a partner-BM client loads with its own token |
+
+Known, deliberate approximations (documented in code): cross-ad reach summation
+(same approximation Meta makes below account level); non-canonical/custom date
+ranges keep additive reach; one ad account per client; all money rendered in the
+primary account currency (mixed-currency portfolios sum numerically — real FX
+normalization is future work); creative thumbnails are angle-keyed gradients
+(real media URLs expire + CSP); campaign kind / audience type / creative angle
+are honest inferences from names/targeting/copy, not Graph facts.
 
 ## ⚪️ Simulated in demo (works, but not real-world)
 
@@ -47,23 +64,26 @@
 - **AI suggestions are heuristic**, not LLM-authored — encoded ad-ops thresholds
   (the LLM layer would *enrich the prose*, not change the math).
 - **Export / share** on the weekly report toasts; it doesn't generate a file.
-- **"Today" anchor** is fixed to 2026-06-17 so the 90-day demo window is coherent
-  regardless of wall-clock.
+- **"Today" anchor** is provider-owned: demo pins 2026-06-17 so the seeded
+  90-day story is stable; live anchors to the real today in the primary ad
+  account's timezone (every window — presets, engine scoring, pacing, weekly
+  report — follows the active snapshot's anchor).
 
 ## ❌ Not built (out of scope this run)
 
-Auth / users / roles · real OAuth + token storage · billing · alerting/email
-delivery of reports · mobile-native · automated scheduled syncs · a backend (the
-running artifact is the frontend + demo; the backend proxy is documented, not
-built). The bundle is now **code-split** into vendor chunks (app ~48 KB gzip,
-react ~68 KB, recharts ~115 KB) — vendor caches across app deploys; per-route
-`React.lazy` splitting remains an available further optimization, not done.
+Auth / users / roles · OAuth UI (the system-user token is created out-of-band
+and lives in the proxy's env) · billing · alerting/email delivery of reports ·
+mobile-native · automated scheduled syncs (loadSnapshot is on-demand) · the
+`client_config`/`decision_log` database backend (still localStorage seams) ·
+FX normalization for mixed-currency portfolios. The bundle is **code-split**
+into vendor chunks (app / react / recharts) — per-route `React.lazy` splitting
+remains an available further optimization, not done.
 
 ## What only a human / the market can finish (the honest residual)
 
-1. **~80% craft ceiling.** A correctness/polish tail remains — most concretely the
-   `LiveProvider` structure-mapping last-mile and per-account conversion/attribution/
-   currency config.
+1. **The 🚪 human gates above.** The live mile is built and machine-verified,
+   but only your real token, real accounts, and an Ads-Manager reconciliation
+   can prove the numbers. Until then, treat live mode as "wired, unproven."
 2. **Design taste sign-off.** The build-loop visual pass + a separate design-critic
    agent drove the UI hard toward an award-winning bar (dark cockpit, premium feel).
    "Looks excellent to two models" ≠ "a designer signed off." That spot-check is yours.
@@ -76,8 +96,9 @@ react ~68 KB, recharts ~115 KB) — vendor caches across app deploys; per-route
 ## Nothing faked as real
 
 No screen shows a "passed" gate that wasn't. Demo data is labelled demo; simulated
-actions say simulated; the live path is labelled scaffolded and throws where the
-last-mile is unfinished rather than pretending to succeed.
+actions say simulated; live writes require an explicit "Confirm live" step that
+says there is no undo; and everything the machine could not verify without real
+credentials is listed above as a 🚪 human gate rather than claimed as working.
 
 ## Independent verification
 

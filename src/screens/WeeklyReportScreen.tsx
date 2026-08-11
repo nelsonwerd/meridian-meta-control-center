@@ -170,12 +170,24 @@ function ReportView({ client, onBack, onShare }: { client: Client; onBack?: () =
         <div className="card flex flex-col items-center justify-center p-5 text-center">
           <SectionHeader title="Budget pacing" />
           <div className="my-4">
-            <ProgressRing value={r.pacing.pace} size={92} stroke={7} tone={r.pacing.pace > 1.1 ? 'rgb(var(--warning))' : 'rgb(var(--success))'}>
-              {Math.round(r.pacing.pace * 100)}%
-            </ProgressRing>
+            {r.pacing.budget > 0 ? (
+              <ProgressRing value={r.pacing.pace} size={92} stroke={7} tone={r.pacing.pace > 1.1 ? 'rgb(var(--warning))' : 'rgb(var(--success))'}>
+                {Math.round(r.pacing.pace * 100)}%
+              </ProgressRing>
+            ) : (
+              <ProgressRing value={0} size={92} stroke={7} tone="rgb(var(--ink-subtle))">
+                —
+              </ProgressRing>
+            )}
           </div>
           <div className="text-sm text-ink-muted">
-            Projected <span className="font-semibold text-ink">{fmtCurrency(r.pacing.projection, { compact: true })}</span> of {fmtCurrency(r.pacing.budget, { compact: true })}
+            {r.pacing.budget > 0 ? (
+              <>
+                Projected <span className="font-semibold text-ink">{fmtCurrency(r.pacing.projection, { compact: true })}</span> of {fmtCurrency(r.pacing.budget, { compact: true })}
+              </>
+            ) : (
+              <>no monthly budget set</>
+            )}
           </div>
         </div>
       </div>

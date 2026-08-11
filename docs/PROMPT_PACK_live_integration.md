@@ -1,5 +1,17 @@
 # Meridian — Live Meta Marketing API Integration · Prompt Pack
 
+> **EXECUTED 2026-08-11** — P1–P6 (plus a P7 Settings-wiring unit the pack
+> under-specified) were implemented in one supervised autonomous run, with a
+> pre-flight that re-verified this pack against the then-current Meta API and
+> corrected it in three places: Graph pinned **v26.0** (not v25.0 — ~6mo of
+> Marketing-API runway left); **`currency_offset` is not an AdAccount field**
+> (derived from `currency` via Meta's currencies table — HUF/TWD are offset 1,
+> the opposite of the scaffold's comment); and the app-wide **DATA_TODAY
+> anchor** had to become provider-owned or live data would have rendered as
+> all-zeros. Machine verification: 124 tests incl. a full fake-Graph
+> integration run. The 🚪 human gates below remain open — see
+> `docs/LEDGER.md` and `META_INTEGRATION.md`'s go-live checklist.
+
 Turn Meridian from **demo mode** to **live Meta data + write actions**. This is the
 engineering slice the deep-dive + build-loop deliberately deferred (see
 `docs/LEDGER.md` → "honest residual"). Each prompt below is **self-contained** —

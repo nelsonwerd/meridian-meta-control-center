@@ -1,6 +1,6 @@
 import type { Dataset } from './demo/generate'
 import type { DateRange, EntityLevel, Insight, MetricsBundle, Scope } from './types'
-import { addDays, aggregate, canonicalPeriodKey, daysBetween, filterByRange, today } from './metrics'
+import { addDays, aggregate, canonicalPeriodKey, daysBetween, earliestDate, filterByRange, today } from './metrics'
 
 /* Pure resolution helpers: entity → its ad ids → insight rows → metrics. Used by
    both the screens and the AI engine so they always agree on the numbers. */
@@ -65,7 +65,12 @@ export function metricsForAdIds(ds: Dataset, adIds: string[], range: DateRange):
   // summed ACROSS ads still over-counts cross-ad overlap — the same
   // approximation Meta itself makes below account level; labelled in LEDGER.md.
   if (ds.periodReachByAd && bundle.reach > 0) {
-    const key = canonicalPeriodKey(range)
+    // Coverage guard: only substitute when the requested range is fully inside
+    // the pulled history — a range reaching before earliestDate() would pair
+    // partial impressions with full-period de-duplicated reach and understate
+    // frequency. (The provider floors windowDays at 56 so canonical windows
+    // are always covered; this guard is belt-and-braces.)
+    const key = range.start >= earliestDate() ? canonicalPeriodKey(range) : null
     if (key) {
       let trueReach = 0
       let allCovered = true

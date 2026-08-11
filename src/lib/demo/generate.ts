@@ -78,6 +78,12 @@ export interface Dataset {
    *  frequency is real (the engine's fatigue/scale gates depend on it). Demo
    *  omits it — its additive approximation is labelled and self-consistent. */
   periodReachByAd?: Map<string, Partial<Record<import('../types').PeriodKey, number>>>
+  /** SEEDED baseline targets captured at generation time. The store's per-client
+   *  config applies overrides ONTO the client objects in place, and the demo
+   *  dataset is a session singleton — so "reset to defaults" must restore these
+   *  generation-time values, not whatever the mutated singleton happens to hold
+   *  after a demo→live→demo round-trip. */
+  pristineTargets?: Record<string, { targetCPA: number; targetROAS: number; monthlyBudget: number; avgOrderValue: number; contributionMargin: number }>
   // indexes
   clientById: Map<string, Client>
   accountByClient: Map<string, AdAccount>
@@ -562,8 +568,17 @@ export function generateDataset(): Dataset {
   // provider uses, so demo and live snapshots are identical in shape. The demo
   // opts INTO status derivation (it has no delivery telemetry); live supplies
   // real effective_status/learning_stage_info instead.
-  return assembleDataset(
+  const ds = assembleDataset(
     { businessManagers: BUSINESS_MANAGERS, clients, accounts, campaigns, adSets, ads, creatives, insights },
     { deriveStatuses: { recentDates: dates.slice(-7) } },
   )
+  // Capture the seeded targets NOW, before any in-place config overlay can
+  // touch the singleton — the store's "reset to defaults" restores from here.
+  ds.pristineTargets = Object.fromEntries(
+    clients.map((c) => [
+      c.id,
+      { targetCPA: c.targetCPA, targetROAS: c.targetROAS, monthlyBudget: c.monthlyBudget, avgOrderValue: c.avgOrderValue, contributionMargin: c.contributionMargin },
+    ]),
+  )
+  return ds
 }

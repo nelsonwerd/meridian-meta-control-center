@@ -10,6 +10,7 @@ import type {
 import type { ActionRequest, ActionResult, DataProvider, Snapshot } from './types'
 import { assembleDataset } from '../dataset/assemble'
 import {
+  addDaysIso,
   ensureClientCosmetics,
   mapAd,
   mapAdSet,
@@ -21,6 +22,7 @@ import {
   synthesizeBusinessManagers,
   PERIOD_KEY_LIST,
   PURCHASE_ACTION,
+  UNMAPPED_BM_ID,
   type RawAd,
   type RawAdSet,
   type RawCampaign,
@@ -32,16 +34,15 @@ import type { PeriodKey } from '../types'
 export { PURCHASE_ACTION, PURCHASE_ACTION_FALLBACK, actionVal } from './liveMap'
 
 /* ============================================================================
-   LiveProvider — Meta (Facebook) Marketing API client SCAFFOLD.
+   LiveProvider — Meta (Facebook) Marketing API client (Graph v26, via the
+   backend token proxy).
 
-   This is real, drop-in code: correct Graph endpoints, the Insights field set a
-   DTC/orders tool needs, cursor pagination, and write actions. It is GUARDED —
-   without credentials it throws a clear, actionable error, so Demo stays the
-   default. When the operator pastes a system-user token + maps ad accounts in
-   Settings, this lights up. See docs/META_INTEGRATION.md for the full setup
-   (system users, partner access for client-owned BMs, app review, rate limits).
-
-   NOT executed in this build (no tokens) → logged as scaffolded in LEDGER.md.
+   Implemented end-to-end (2026-08-11): structure pull → domain mapping →
+   daily + true-period-reach insights → shared assembly, plus guarded writes.
+   Without a saved config it throws NotConfigured (Demo stays the default);
+   with one, everything routes through server/proxy.mjs — the browser never
+   holds a token. Machine-verified against a faked Graph in tests; the real-
+   credential checks are 🚪 human gates (docs/LEDGER.md, META_INTEGRATION.md).
    ========================================================================== */
 
 /** All Graph traffic goes through the backend token proxy (server/proxy.mjs) —
@@ -70,17 +71,16 @@ export const INSIGHT_FIELDS = [
   'spend',
   'impressions',
   'reach',
-  'frequency',
   'clicks',
   'inline_link_clicks',
-  'outbound_clicks',
   'actions', // purchase, add_to_cart, landing_page_view live here
   'action_values', // purchase value → revenue
-  'purchase_roas',
-  'cost_per_action_type',
   'video_play_actions',
   'video_3_sec_watched_actions',
   'video_thruplay_watched_actions',
+  // NB deliberately NOT requested (mapInsightRow never reads them; insights CPU
+  // is billed per field): frequency, outbound_clicks, purchase_roas,
+  // cost_per_action_type. Rates are derived app-side from additive facts.
 ].join(',')
 
 /** Per-client account mapping + the token that can read/write it. An agency BM's
@@ -158,13 +158,17 @@ function parseBuc(res: Response): BucUsage | null {
   const raw = res.headers.get('x-business-use-case-usage')
   if (!raw) return null
   try {
-    const first = Object.values(JSON.parse(raw) as Record<string, Array<Record<string, number>>>)[0]?.[0]
-    if (!first) return null
-    return {
-      callCount: first.call_count ?? 0,
-      totalCpuTime: first.total_cputime ?? 0,
-      estimatedTimeToRegainAccess: first.estimated_time_to_regain_access ?? 0,
+    // Scan EVERY bucket (ads_management and ads_insights throttle separately) —
+    // reading only the first entry would miss the insights bucket entirely.
+    const entries = Object.values(JSON.parse(raw) as Record<string, Array<Record<string, number>>>).flat()
+    if (entries.length === 0) return null
+    const out: BucUsage = { callCount: 0, totalCpuTime: 0, estimatedTimeToRegainAccess: 0 }
+    for (const e of entries) {
+      out.callCount = Math.max(out.callCount, e.call_count ?? 0)
+      out.totalCpuTime = Math.max(out.totalCpuTime, e.total_cputime ?? 0, e.total_time ?? 0)
+      out.estimatedTimeToRegainAccess = Math.max(out.estimatedTimeToRegainAccess, e.estimated_time_to_regain_access ?? 0)
     }
+    return out
   } catch {
     return null
   }
@@ -178,23 +182,36 @@ function buildUrl(path: string, params: Record<string, string>, extra: Record<st
   return url.toString()
 }
 
-/** Per-request routing header: the proxy maps a business id → its token
- *  (META_TOKENS), falling back to the agency system-user token. */
+/** Per-request headers: business-id routing (the proxy maps it → its token
+ *  via META_TOKENS) + the CSRF guard header the proxy requires on /api/*
+ *  (a custom header forces a CORS preflight, blocking drive-by cross-origin
+ *  requests at localhost). */
 function routingHeaders(businessId?: string): Record<string, string> {
-  return businessId ? { 'X-Meta-Business-Id': businessId } : {}
+  return { 'X-Meridian-Client': '1', ...(businessId ? { 'X-Meta-Business-Id': businessId } : {}) }
 }
 
-// Single fetch with minimal throttle backoff. The proxy also backs off
-// server-side; this browser-side pass is a second seatbelt for long pulls.
-// Backs off on a 429 or when BUC usage crosses ~95%, up to 3 attempts.
+// Single fetch with throttle handling. The proxy owns the real BUC backoff;
+// this browser-side pass is a second seatbelt. Retries ONLY on 429 — a 200
+// whose BUC usage is high is still a good response and must never be
+// discarded and refetched (that would amplify call volume exactly when Meta
+// asks for less). High-usage 200s instead pace the NEXT call.
+let pacePauseMs = 0
 async function graphFetch(url: string, businessId?: string, attempt = 0): Promise<Response> {
+  if (pacePauseMs > 0) {
+    const wait = pacePauseMs
+    pacePauseMs = 0
+    await new Promise((r) => setTimeout(r, wait))
+  }
   const res = await fetch(url, { headers: routingHeaders(businessId) })
   const buc = parseBuc(res)
-  const throttled = res.status === 429 || (buc != null && (buc.callCount >= 95 || buc.totalCpuTime >= 95))
-  if (throttled && attempt < 3) {
-    const waitMs = buc?.estimatedTimeToRegainAccess ? buc.estimatedTimeToRegainAccess * 1000 : Math.min(2 ** attempt * 1000, 8000)
+  if (res.status === 429 && attempt < 3) {
+    // regain hint is in MINUTES per Meta's rate-limit docs; cap the wait
+    const waitMs = buc?.estimatedTimeToRegainAccess ? Math.min(buc.estimatedTimeToRegainAccess * 60_000, 8000) : Math.min(2 ** attempt * 1000, 8000)
     await new Promise((r) => setTimeout(r, waitMs))
     return graphFetch(url, businessId, attempt + 1)
+  }
+  if (res.ok && buc != null && (buc.callCount >= 95 || buc.totalCpuTime >= 95)) {
+    pacePauseMs = 2000 // slow the next call; keep THIS response
   }
   return res
 }
@@ -250,9 +267,10 @@ async function graphGetNode<T>(path: string, params: Record<string, string>, bus
    window and retry). report_run_id expires after ~30 days — never persisted.
    ------------------------------------------------------------------------- */
 
-/** Sync pulls comfortably handle a ~5-week window at daily ad grain; beyond
- *  that we submit an async report job instead. */
-export const ASYNC_INSIGHTS_THRESHOLD_DAYS = 35
+/** Sync pulls comfortably handle a ~2-month window at daily ad grain; beyond
+ *  that we submit an async report job instead. (windowDays is floored at 56,
+ *  so the floor stays on the sync path and the 90-day default goes async.) */
+export const ASYNC_INSIGHTS_THRESHOLD_DAYS = 60
 
 export interface AsyncJobOpts {
   /** initial poll delay; grows ×1.5 capped at 12× base (tests use ~1ms) */
@@ -338,6 +356,13 @@ export class LiveProvider implements DataProvider {
   async loadSnapshot(): Promise<Snapshot> {
     if (!this.cfg || this.cfg.accounts.length === 0) throw new NotConfiguredError()
     const cfg = this.cfg
+    // Floor the history window at 56 days: the app's DEFAULT view is the 28d
+    // preset, and its previous-period delta window reaches back to day 56. A
+    // shorter pull would silently understate frequency (28d true reach over
+    // fewer days of impressions), fabricate +1300%-style deltas against a
+    // 2-day previous window, understate month pacing (false under-pacing
+    // suggestions), and starve the fatigue rule's prev-14d baseline.
+    const windowDays = Math.max(56, cfg.windowDays)
     const accounts: AdAccount[] = []
     const campaigns: Campaign[] = []
     const adSets: AdSet[] = []
@@ -400,9 +425,27 @@ export class LiveProvider implements DataProvider {
         acct.businessId,
       )
 
+      const mappedCampaigns = rawCampaigns.map((r) => mapCampaign(r, ctx))
       const mappedAdSets = rawAdSets.map((r) => mapAdSet(r, ctx))
       const adSetStatusById = new Map(mappedAdSets.map((s) => [s.id, s.status]))
       const mappedAds = rawAds.map((r) => mapAd(r, adSetStatusById.get(r.adset_id ?? ''), ctx))
+
+      // Referential integrity for PARENTS: an ad can reference a campaign/ad
+      // set outside the pulled set (list-edge filtering asymmetries). Every
+      // screen and the engine deref campaignById/adSetById on these ids —
+      // synthesize an ARCHIVED shell rather than shipping a dangling ref.
+      const campaignIds = new Set(mappedCampaigns.map((c) => c.id))
+      const adSetIds = new Set(mappedAdSets.map((s) => s.id))
+      for (const ad of mappedAds) {
+        if (ad.campaignId && !campaignIds.has(ad.campaignId)) {
+          campaignIds.add(ad.campaignId)
+          mappedCampaigns.push(mapCampaign({ id: ad.campaignId, name: '(campaign outside pulled set)', effective_status: 'ARCHIVED' }, ctx))
+        }
+        if (ad.adSetId && !adSetIds.has(ad.adSetId)) {
+          adSetIds.add(ad.adSetId)
+          mappedAdSets.push(mapAdSet({ id: ad.adSetId, campaign_id: ad.campaignId, name: '(ad set outside pulled set)', effective_status: 'ARCHIVED' }, ctx))
+        }
+      }
 
       // Earliest referencing-ad date per creative — /adcreatives has no created
       // date, and a real date is what keeps the batch cohorts meaningful.
@@ -423,18 +466,20 @@ export class LiveProvider implements DataProvider {
         }
       }
 
-      campaigns.push(...rawCampaigns.map((r) => mapCampaign(r, ctx)))
+      campaigns.push(...mappedCampaigns)
       adSets.push(...mappedAdSets)
       ads.push(...mappedAds)
       creatives.push(...mappedCreatives)
 
       // ---- insights: daily ad-grain rows over the configured window ----
-      // Window in the ACCOUNT's timezone — Meta reports daily rows on the
-      // account tz, so a UTC window would shift totals vs Ads Manager.
-      // (windowDays - 1) back through today = exactly windowDays days,
-      // matching the demo's window semantics.
-      const since = isoDaysAgoInTz(timezone, cfg.windowDays - 1)
-      const until = isoDaysAgoInTz(timezone, 0)
+      // Window in the ANCHOR's date frame (first account's tz), widened one day
+      // on each edge. Meta interprets time_range dates in each ACCOUNT's tz, so
+      // for a tz-shifted account the anchor-frame dates land one local day off —
+      // the buffer guarantees every date the app can request
+      // ([anchor-(windowDays-1), anchor]) has rows regardless of the account's
+      // timezone, and app-side filterByRange trims the extra edge days.
+      const since = addDaysIso(anchor, -windowDays) // windowDays-1 back, +1 buffer
+      const until = addDaysIso(anchor, 1) // anchor, +1 buffer (future dates return no rows)
       const purchaseAction = acct.purchaseActionType || PURCHASE_ACTION
       // Attribution: we request NO custom action_attribution_windows — the
       // default (7d-click + 1d-view) is what Ads Manager reports, and since
@@ -450,11 +495,37 @@ export class LiveProvider implements DataProvider {
       // Long windows go through an async report job (a sync GET would time
       // out); short pulls stay on the paginated sync path.
       const adRows =
-        cfg.windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS
+        windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS
           ? await runAsyncInsightsJob<any>(acct.adAccountId, insightParams, acct.businessId, this.asyncOpts)
           : await graphGet<any>(`${acct.adAccountId}/insights`, insightParams, acct.businessId)
       for (const r of adRows) {
         insights.push(mapInsightRow(r, acct.clientId, purchaseAction))
+      }
+
+      // Ads DELETED mid-window still have insight rows, but the /ads list edge
+      // excludes them by default — orphaned rows would be silently dropped by
+      // the ad-id join and every roll-up would understate spend/orders vs Ads
+      // Manager. Synthesize an ARCHIVED shell ad per orphan so client/portfolio
+      // totals stay truthful (they carry no campaign/ad-set parent — campaign
+      // drill-downs, like Meta's own campaign view, exclude removed ads).
+      const knownAdIds = new Set(mappedAds.map((a) => a.id))
+      const orphanIds = new Set<string>()
+      for (const r of adRows) {
+        if (r.ad_id && !knownAdIds.has(r.ad_id)) orphanIds.add(r.ad_id)
+      }
+      for (const id of orphanIds) {
+        const shellCreativeId = `cr_removed_${id}`
+        ads.push({
+          id,
+          adSetId: '',
+          campaignId: '',
+          clientId: acct.clientId,
+          name: `Removed ad ${id}`,
+          status: 'ARCHIVED',
+          creativeId: shellCreativeId,
+          createdAt: anchor,
+        })
+        creatives.push(placeholderCreative(shellCreativeId, 'Removed ad', ctx))
       }
 
       // ---- TRUE period reach per ad (P4) ----
@@ -465,7 +536,7 @@ export class LiveProvider implements DataProvider {
       // Meta's own best practice. Windows are anchored to the snapshot anchor
       // so they match the ranges the UI/engine will request.
       for (const key of PERIOD_KEY_LIST) {
-        const b = periodBoundsFor(key, anchor, cfg.windowDays)
+        const b = periodBoundsFor(key, anchor, windowDays)
         const reachRows = await graphGet<{ ad_id: string; reach?: string }>(
           `${acct.adAccountId}/insights`,
           { level: 'ad', fields: 'ad_id,reach', time_range: JSON.stringify({ since: b.start, until: b.end }) },
@@ -492,18 +563,20 @@ export class LiveProvider implements DataProvider {
       const base = ensureClientCosmetics(
         configured ?? { id: a.clientId, name: account?.name ?? a.clientId },
         anchor ?? isoTodayInTz('UTC'),
-        cfg.windowDays,
+        windowDays,
         account?.currency ?? primaryCurrency,
       )
       // The directory + scope switcher group clients by bmId — bind it to the
       // account's business id so every live client is visible under its BM.
-      return { ...base, bmId: acctByClient.get(a.clientId)?.businessId ?? base.bmId }
+      // '' → the synthesized "Unmapped" BM: a client must never be invisible
+      // in the directory/scope switcher because its business id is blank.
+      return { ...base, bmId: acctByClient.get(a.clientId)?.businessId || UNMAPPED_BM_ID }
     })
     const businessManagers = synthesizeBusinessManagers(cfg.accounts)
 
     const ds = assembleDataset({ businessManagers, clients, accounts, campaigns, adSets, ads, creatives, insights })
     const dataAnchor = anchor ?? isoTodayInTz('UTC')
-    return { ...ds, periodReachByAd, mode: 'live', generatedAt: new Date().toISOString(), dataAnchor, windowDays: cfg.windowDays }
+    return { ...ds, periodReachByAd, mode: 'live', generatedAt: new Date().toISOString(), dataAnchor, windowDays }
   }
 
   async applyAction(req: ActionRequest, snapshot: Snapshot): Promise<ActionResult> {

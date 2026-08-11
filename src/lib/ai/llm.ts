@@ -92,7 +92,8 @@ export async function narrate(ctx: NarrativeContext): Promise<string | null> {
     const { system, user } = buildNarrativePrompt(ctx)
     const res = await fetch(PROXY_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // X-Meridian-Client: the proxy's CSRF guard on paid-key routes
+      headers: { 'Content-Type': 'application/json', 'X-Meridian-Client': '1' },
       body: JSON.stringify({ model: NARRATIVE_MODEL, system, messages: [{ role: 'user', content: user }], max_tokens: 600 }),
     })
     if (!res.ok) return null

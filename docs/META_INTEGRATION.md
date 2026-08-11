@@ -54,9 +54,10 @@ agency system-user token as `defaultAccessToken`.
 
 ## 2. Map clients → ad accounts
 
-In **Settings → Ad account mapping**, each client maps to a Meta ad account
-(`act_<id>`) under a business manager. Persist a `LiveConfig`
-(`saveLiveConfig()` in `liveProvider.ts`):
+**Settings → Live ad account mapping** is an editable table (add/remove
+clients; per-row `act_` id, business id/name/type, optional purchase event;
+windowDays). "Save mapping" persists the `LiveConfig` the provider reads —
+no tokens in it, ever:
 
 ```ts
 {
@@ -73,29 +74,30 @@ In **Settings → Ad account mapping**, each client maps to a Meta ad account
 Targets (CPA/ROAS), AOV, and contribution margin are **business inputs**, not API
 fields — they live in this config (seeded today from `catalog.ts`).
 
-## 3. Pull structure + insights
+## 3. Pull structure + insights — BUILT (2026-08-11, Graph v26.0)
 
-`LiveProvider.loadSnapshot()` already implements the **insights pull** (the hard
-part) and leaves the **structure→type mapping** as the marked last-mile. Per
-account:
+`LiveProvider.loadSnapshot()` is complete: per account it pulls the account
+node, `campaigns` / `adsets` / `ads` / `adcreatives` (cursor pagination), maps
+them onto the domain model (`src/lib/provider/liveMap.ts` — status
+normalization incl. `learning_stage_info` LEARNING/FAIL →
+LEARNING/LEARNING_LIMITED, CBO/ABO from budget location, legacy→ODAX
+objectives, kind/audience/angle inference), pulls daily ad-grain insights plus
+**true de-duplicated period reach** per canonical window, and assembles the
+same `Dataset` shape demo uses.
 
-- **Structure**: `GET /{act_id}/campaigns`, `/adsets`, `/ads`, `/adcreatives`
-  with cursor pagination (`graphGet` handles paging). Map onto `Campaign` /
-  `AdSet` / `Ad` / `Creative`. Internal-vs-UI naming trap:
-  `ad-campaign-group`=Campaign, `ad-campaign`=Ad Set, `adgroup`=Ad.
-- **Insights**: `GET /{act_id}/insights` with `level=ad`, `time_increment=1`,
-  `time_range={since,until}`, and `INSIGHT_FIELDS`. **There is no scalar
-  purchases/revenue** — orders/revenue/CPA/ROAS are pulled from the nested
-  `actions` / `action_values` / `purchase_roas` arrays by `action_type`. Meridian
-  standardizes on **`omni_purchase`** (fallback `offsite_conversion.fct.purchase`).
-  `actionVal()` already does this extraction.
-
-Use **async insight report jobs** for large historical pulls and watch the
-`X-Business-Use-Case-Usage` response header to back off before rate limits.
-
-> ⚠️ **Attribution** (as of 2026-01-12): `7d_view` / `28d_view` windows were
-> removed from the Insights API. Default is 7d-click + 1d-view; `28d_click`
-> survives. Set `action_attribution_windows` explicitly if you need non-default.
+- **Insights**: `level=ad`, `time_increment=1`, `time_range` in the account's
+  timezone. There is no scalar purchases/revenue — orders/revenue come from the
+  nested `actions`/`action_values` arrays by `action_type`. Default
+  **`omni_purchase`** (fallback `offsite_conversion.fct.purchase`);
+  per-account override in Settings → mapping → "Purchase event".
+- **Async report jobs**: windows > 35 days POST the insights query → poll the
+  `report_run_id` gated STRICTLY on `async_status === "Job Completed"` (the
+  percent field can read 100 while still running) → fetch the rows.
+- **Attribution**: no custom `action_attribution_windows` are requested — the
+  default (7d-click + 1d-view) is Ads-Manager parity, and Meta disregards the
+  unified-attribution override params since 2025-06-10. Never request
+  `7d_view`/`28d_view` (removed 2026-01-12; they return empty silently).
+- Both the proxy and the browser client back off on `X-Business-Use-Case-Usage`.
 
 ## 4. Write actions
 
@@ -105,25 +107,46 @@ Use **async insight report jobs** for large historical pulls and watch the
 - **Budget change**: `POST /{entity_id}` with `daily_budget` (or `lifetime_budget`).
 - **Bid**: `bid_amount` (+ `bid_strategy`).
 
-> ⚠️ Budgets/bids POST in **minor currency units**, but the multiplier is the
-> account's **`currency_offset`** (100 for USD/EUR, **1** for JPY/KRW). Read
-> `currency_offset` from the ad account; don't hard-code ÷100 (there's a `TODO`
-> at that line). Objectives are immutable; creatives are effectively immutable.
+> ⚠️ Budgets/bids POST in **minor currency units**. NB `currency_offset` is
+> **not a field on the AdAccount node** (verified 2026-08-11) — Meridian derives
+> it from the account's `currency` via Meta's currencies table
+> (`currencyOffset()`): offset **1** for exactly CLP, COP, CRC, **HUF**, ISK,
+> IDR, JPY, KRW, PYG, **TWD**, VND; 100 for everything else. HUF/TWD are
+> offset-1 at Meta despite ISO-4217 — an ISO assumption would post 100× too
+> large. Objectives are immutable; creatives are effectively immutable. Writes
+> to legacy Advantage+ shopping campaigns may be rejected by Meta (blocked
+> since 2026-05-19) — the error is surfaced, not swallowed.
 
 Every Meridian suggestion already carries a typed `SuggestedAction` with the
 target entity, level, and proposed budget — `applyAction` consumes it directly.
 
-## 5. Backend proxy (recommended shape)
+## 5. Backend proxy — BUILT (`server/proxy.mjs`, zero dependencies)
 
-A ~100-line server (Express/Fastify/Next route handlers) that:
-- holds the system-user token(s) in env,
-- exposes `GET /api/meta/*` → forwards to `graph.facebook.com/v25.0/*` with the
-  token injected, parses `X-Business-Use-Case-Usage` for throttling,
-- exposes `POST /api/meta/{id}` for writes,
-- exposes `POST /api/ai/narrate` for the LLM layer (§6).
+The proxy is real and tested (18 tests against an in-process mock upstream).
+It holds every secret; the browser never sees a token and the proxy **rejects**
+any client-supplied `access_token` loudly. It also redacts the token from
+upstream bodies (Graph embeds it in `paging.next`).
 
-Then point `GRAPH_BASE` in `liveProvider.ts` at your proxy instead of
-`graph.facebook.com`, and drop the in-browser token entirely.
+```bash
+# dev: proxy on :8787 + vite on :5173 (vite forwards /api + /healthz)
+META_SYSTEM_TOKEN=EAAB... npm run proxy
+npm run dev
+
+# production: one process serves the built SPA AND proxies Graph
+npm run build
+META_SYSTEM_TOKEN=EAAB... SERVE_DIST=1 HOST=0.0.0.0 node server/proxy.mjs
+```
+
+| Env var | Purpose |
+|---|---|
+| `META_SYSTEM_TOKEN` | agency system-user token (default for every call) |
+| `META_TOKENS` | optional JSON map `{"<businessId>": "<token>"}` for client-owned BMs — the browser routes each call by `X-Meta-Business-Id` |
+| `ANTHROPIC_API_KEY` | enables `POST /api/ai/narrate` (§6) |
+| `PORT` / `HOST` | default `8787` / `127.0.0.1` (`0.0.0.0` behind your TLS terminator) |
+| `SERVE_DIST=1` | also serve `dist/` (SPA fallback) for single-process production |
+
+Health: `GET /healthz` probes Graph `/me` with the server-side token and
+returns `{ ok, name }` — Settings → "Check proxy & token" calls exactly this.
 
 ## 6. AI narrative (optional enrichment)
 
@@ -131,11 +154,15 @@ The **numeric judgement engine works with zero keys** — scale/cut/fatigue/
 consolidate all run on heuristics (`src/lib/ai/engine.ts`). The LLM layer
 (`src/lib/ai/llm.ts`) only *enriches the prose*. To enable:
 
-1. Stand up `POST /api/ai/narrate` that forwards `{system, messages, model}` to
-   the Anthropic API (server-side key) and returns `{ text }`.
-   Models: `claude-sonnet-4-6` (narrative), `claude-opus-4-8` (weekly strategy).
-2. Set `USE_LLM = true` in `llm.ts`. `buildNarrativePrompt()` already constructs
-   a grounded, numbers-first prompt from the engine's findings.
+1. `POST /api/ai/narrate` is built into the proxy — it forwards
+   `{model, system, messages, max_tokens}` to the Anthropic Messages API with
+   `ANTHROPIC_API_KEY` from env and returns `{ text }`. Without the key it
+   returns a clear 503 and the app silently stays heuristic.
+   Models (current as of 2026-08-11): `claude-sonnet-5` (narrative),
+   `claude-opus-5` (weekly strategy).
+2. Toggle **Settings → AI analyst → "LLM enriched"** (persisted locally, off by
+   default). The client dashboard then renders the "Strategist read" card;
+   every failure degrades silently back to heuristic prose.
 
 ## 7. Persistence backend — `client_config` + `decision_log`
 
@@ -256,16 +283,21 @@ A scheduled job is what makes outcomes (and therefore calibration) real:
 
 ## Go-live checklist
 
+Machine-done (2026-08-11): ~~backend proxy~~ · ~~browser token removed~~ ·
+~~structure mapping~~ · ~~minor-unit currency map~~ · ~~async insights~~ ·
+~~attribution stance~~ · ~~API pinned v26.0~~ · ~~narrate route + toggle~~.
+Remaining — every box below needs YOU (real credentials / real accounts):
+
 - [ ] App created, 6 scopes approved via App Review + Business Verification
-- [ ] System user + long-lived token, stored server-side
-- [ ] Partner access accepted for client-owned BMs; assets shared
-- [ ] Backend proxy live; `GRAPH_BASE` repointed; browser token removed
-- [ ] `LiveProvider.loadSnapshot()` structure mapping completed (last-mile)
-- [ ] `currency_offset` sourced per account for budget writes
-- [ ] Conversion event confirmed per account (`omni_purchase` vs custom)
-- [ ] Attribution windows set intentionally
-- [ ] Pin & re-verify Graph API version (currently `v25.0`)
-- [ ] (Optional) `/api/ai/narrate` proxy live, `USE_LLM = true`
+- [ ] System user + long-lived token, set as `META_SYSTEM_TOKEN` on the proxy
+- [ ] Partner access accepted for client-owned BMs; per-BM tokens in `META_TOKENS`
+- [ ] Real `act_`/business ids entered in Settings → Live ad account mapping
+- [ ] 🚪 `/healthz` green; Test Meta connection green
+- [ ] 🚪 Flip to Live: campaigns/ads render; KPIs reconcile with Ads Manager
+- [ ] 🚪 A known fatigued/learning-limited entity surfaces correctly
+- [ ] 🚪 One real pause + budget change on a SANDBOX/lowest-spend ad
+- [ ] Conversion event confirmed per account (`omni_purchase` vs pixel/custom)
+- [ ] (Optional) `ANTHROPIC_API_KEY` on the proxy + "LLM enriched" toggled on
 - [ ] `client_config` + `decision_log` tables provisioned with `workspace_id` tenancy (RLS)
 - [ ] Config + history API endpoints live; `ConfigStore`/`HistoryStore` repointed from `localStorage` to fetch
 - [ ] Live outcome-capture job scheduled (back-fills `decision_log.outcome` + `outcome_captured_at`)

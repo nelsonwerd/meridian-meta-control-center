@@ -61,7 +61,7 @@ export function SettingsScreen() {
   const pushToast = useStore((s) => s.pushToast)
   const [mode, setMode] = useState<ProviderMode>(getProviderMode())
   const [rows, setRows] = useState<LiveRow[]>(() => initialRows(snapshot))
-  const [windowDays, setWindowDays] = useState<number>(() => loadLiveConfig()?.windowDays ?? WINDOW_DAYS)
+  const [windowDays, setWindowDays] = useState<number>(() => Math.max(56, loadLiveConfig()?.windowDays ?? WINDOW_DAYS))
   const [llmOn, setLlmOn] = useState(isLlmEnabled())
   const [testing, setTesting] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; detail: string } | null>(null)
@@ -96,6 +96,18 @@ export function SettingsScreen() {
   }
 
   const saveMapping = () => {
+    // Validate BEFORE persisting: one blank act_/business id would brick live
+    // boot with an opaque Graph error on the first node read. Only complete
+    // rows are saved; incomplete ones are named loudly.
+    const incomplete = rows.filter((r) => !r.adAccountId.trim() || !r.businessId.trim())
+    if (incomplete.length > 0) {
+      pushToast('error', `Not saved — ${incomplete.length} row(s) missing an ad account or business id: ${incomplete.map((r) => r.clientName || r.clientId).join(', ')}.`)
+      return
+    }
+    if (rows.length === 0) {
+      pushToast('error', 'Not saved — add at least one client row.')
+      return
+    }
     const prior = loadLiveConfig()
     const today = new Date().toISOString().slice(0, 10)
     const cfg: LiveConfig = {
@@ -232,16 +244,16 @@ export function SettingsScreen() {
             subtitle="Real Meta ids for live mode: each client's act_ ad account + business manager id. Saved locally; tokens stay server-side in the proxy."
             action={
               <div className="flex items-center gap-2">
-                <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+                <label className="flex items-center gap-1.5 text-xs text-ink-muted" title="Minimum 56: the default 28-day view compares against the previous 28 days — a shorter pull would fabricate deltas and understate frequency/pacing.">
                   Window
                   <input
                     type="number"
-                    min={7}
+                    min={56}
                     max={365}
                     value={windowDays}
                     onChange={(e) => {
                       const v = Number(e.target.value)
-                      if (Number.isFinite(v) && v >= 7 && v <= 365) setWindowDays(v)
+                      if (Number.isFinite(v) && v >= 56 && v <= 365) setWindowDays(v)
                     }}
                     className="input w-16 px-2 py-1 text-xs tabular-nums"
                   />

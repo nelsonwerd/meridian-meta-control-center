@@ -107,13 +107,23 @@ export function ClientDashboard({ client }: { client: Client }) {
         <div className="card flex flex-col p-5">
           <SectionHeader title="Monthly pacing" subtitle="Projected vs contracted budget" />
           <div className="mt-4 flex items-center gap-4">
-            <ProgressRing value={pacing.pace} size={72} stroke={6} tone={pacing.pace > 1.1 ? 'rgb(var(--warning))' : 'rgb(var(--brand))'}>
-              {Math.round(pacing.pace * 100)}%
-            </ProgressRing>
+            {client.monthlyBudget > 0 ? (
+              <ProgressRing value={pacing.pace} size={72} stroke={6} tone={pacing.pace > 1.1 ? 'rgb(var(--warning))' : 'rgb(var(--brand))'}>
+                {Math.round(pacing.pace * 100)}%
+              </ProgressRing>
+            ) : (
+              // No contracted budget → there is no honest pace. A default ring
+              // would fabricate a 100% "on pace" read for unconfigured clients.
+              <ProgressRing value={0} size={72} stroke={6} tone="rgb(var(--ink-subtle))">
+                —
+              </ProgressRing>
+            )}
             <div className="text-sm">
               <div className="text-ink-muted">Projected spend</div>
               <div className="text-lg font-semibold tabular-nums text-ink">{fmtCurrency(pacing.projection, { compact: true })}</div>
-              <div className="text-2xs text-ink-subtle">of {fmtCurrency(pacing.budget, { compact: true })} budget</div>
+              <div className="text-2xs text-ink-subtle">
+                {client.monthlyBudget > 0 ? <>of {fmtCurrency(pacing.budget, { compact: true })} budget</> : <>no monthly budget set — add one in Settings</>}
+              </div>
             </div>
           </div>
           <div className="mt-4 space-y-2 border-t border-line pt-4 text-sm">

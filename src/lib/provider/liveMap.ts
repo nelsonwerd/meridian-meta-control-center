@@ -345,21 +345,30 @@ export function ensureClientCosmetics(c: Partial<Client> & { id: string; name: s
   }
 }
 
-function addDaysIso(iso: ISODate, days: number): ISODate {
+/** Pure UTC date arithmetic on ISO 'YYYY-MM-DD'. Exported: the live provider
+ *  builds anchor-frame insight windows with it. */
+export function addDaysIso(iso: ISODate, days: number): ISODate {
   const d = new Date(iso + 'T00:00:00Z')
   d.setUTCDate(d.getUTCDate() + days)
   return d.toISOString().slice(0, 10)
 }
+
+/** Every screen that lists clients groups them under a BusinessManager row —
+ *  a client whose bmId matches nothing is INVISIBLE in the directory and the
+ *  scope switcher. An empty businessId therefore lands in this fallback group
+ *  instead of vanishing. */
+export const UNMAPPED_BM_ID = 'unmapped'
 
 /** Synthesize the BusinessManager rows the directory + scope switcher group by.
  *  LiveConfig carries a business id (+ optional name/type) per account. */
 export function synthesizeBusinessManagers(accounts: LiveAccountConfig[]): BusinessManager[] {
   const seen = new Map<string, BusinessManager>()
   for (const a of accounts) {
-    if (!a.businessId || seen.has(a.businessId)) continue
-    seen.set(a.businessId, {
-      id: a.businessId,
-      name: a.businessName ?? `Business ${a.businessId.slice(-4)}`,
+    const id = a.businessId || UNMAPPED_BM_ID
+    if (seen.has(id)) continue
+    seen.set(id, {
+      id,
+      name: a.businessId ? (a.businessName ?? `Business ${a.businessId.slice(-4)}`) : 'Unmapped (set a business id)',
       type: a.businessType ?? 'agency',
       metaBusinessId: a.businessId,
     })
@@ -470,7 +479,7 @@ export const PERIOD_KEY_LIST: PeriodKey[] = ['3d', '7d', '14d', '28d', 'prev7', 
  *  mirror metrics.periodBounds() (which reads the app-level anchor) so the
  *  live pull's windows match the ranges the UI/engine request. */
 export function periodBoundsFor(key: PeriodKey, anchor: ISODate, windowDays: number): { start: ISODate; end: ISODate } {
-  const back = (n: number) => addDaysUtc(anchor, -n)
+  const back = (n: number) => addDaysIso(anchor, -n)
   switch (key) {
     case '3d':
       return { start: back(2), end: anchor }
@@ -489,11 +498,6 @@ export function periodBoundsFor(key: PeriodKey, anchor: ISODate, windowDays: num
   }
 }
 
-function addDaysUtc(iso: ISODate, days: number): ISODate {
-  const d = new Date(iso + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
 
 /* ------------------------------- insights -------------------------------- */
 
@@ -526,7 +530,12 @@ export function mapInsightRow(r: any, clientId: string, purchaseAction: string):
     linkClicks: Number(r.inline_link_clicks ?? 0),
     purchases: actionVal(r.actions, purchaseAction) || actionVal(r.actions, PURCHASE_ACTION_FALLBACK),
     revenue: actionVal(r.action_values, purchaseAction) || actionVal(r.action_values, PURCHASE_ACTION_FALLBACK),
-    addToCart: actionVal(r.actions, 'add_to_cart'),
+    // omni_add_to_cart is the de-duplicated rollup; web-pixel accounts emit the
+    // fct form, not bare 'add_to_cart' — a bare-only lookup reads 0 on live.
+    addToCart:
+      actionVal(r.actions, 'omni_add_to_cart') ||
+      actionVal(r.actions, 'add_to_cart') ||
+      actionVal(r.actions, 'offsite_conversion.fct.add_to_cart'),
     landingPageViews: actionVal(r.actions, 'landing_page_view'),
     videoPlays: actionVal(r.video_play_actions, 'video_view'),
     video3s: actionVal(r.video_3_sec_watched_actions, 'video_view'),

@@ -118,7 +118,12 @@ function captureBaseTargets(snapshot: Snapshot) {
   if (baseClientTargets) return
   baseClientTargets = {}
   for (const c of snapshot.clients) {
-    baseClientTargets[c.id] = {
+    // Prefer the dataset's generation-time pristine targets: the demo dataset
+    // is a session singleton mutated in place by config overlays, so after a
+    // demo→live→demo round-trip the client objects may already carry overrides
+    // — capturing THOSE would make "reset to defaults" restore stale values.
+    const pristine = snapshot.pristineTargets?.[c.id]
+    baseClientTargets[c.id] = pristine ?? {
       targetCPA: c.targetCPA,
       targetROAS: c.targetROAS,
       monthlyBudget: c.monthlyBudget,
@@ -208,6 +213,11 @@ export const useStore = create<MeridianState>((set, get) => ({
       applied: [],
       appliedSuggestionIds: new Set(),
       dismissedSuggestionIds: new Set(),
+      // The old dataset's client/BM ids don't exist in the new one — a stale
+      // client scope would render a zeroed shell while the switcher claims a
+      // selection. Reset to portfolio and close any entity drawer.
+      scope: { kind: 'portfolio' },
+      drawer: null,
     })
     await get().init()
   },

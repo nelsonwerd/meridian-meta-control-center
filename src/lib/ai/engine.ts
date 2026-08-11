@@ -32,12 +32,18 @@ interface BudgetHolder {
   currentBudget: number | null
 }
 
-function budgetHolder(ds: Dataset, ad: Ad): BudgetHolder {
-  const campaign = ds.campaignById.get(ad.campaignId)!
+/** Resolve the entity that holds this ad's budget. Returns null on a dangling
+ *  parent reference — possible on live snapshots (an ad whose campaign/ad set
+ *  fell outside the pulled set) — so the engine degrades to "no scale
+ *  suggestion" instead of crashing every screen on a `.get()!`. */
+function budgetHolder(ds: Dataset, ad: Ad): BudgetHolder | null {
+  const campaign = ds.campaignById.get(ad.campaignId)
+  if (!campaign) return null
   if (campaign.budgetType === 'CBO') {
     return { level: 'campaign', id: campaign.id, name: campaign.name, currentBudget: campaign.dailyBudget }
   }
-  const adSet = ds.adSetById.get(ad.adSetId)!
+  const adSet = ds.adSetById.get(ad.adSetId)
+  if (!adSet) return null
   return { level: 'adset', id: adSet.id, name: adSet.name, currentBudget: adSet.dailyBudget }
 }
 
@@ -161,6 +167,7 @@ export function analyzeAd(ds: Dataset, ad: Ad, client: Client, t: typeof T = T):
     m3.cpa > 0 &&
     m3.cpa <= target * t.scaleCpaRatio &&
     m7.frequency < t.scaleMaxFrequency &&
+    holder != null &&
     holder.currentBudget != null
   ) {
     const proposed = Math.round((holder.currentBudget * (1 + t.scaleStepPct)) / 5) * 5

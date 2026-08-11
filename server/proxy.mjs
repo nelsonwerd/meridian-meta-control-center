@@ -39,7 +39,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
  *   port: number, host: string,
  *   graphBase: string, anthropicBase: string,
  *   systemToken: string, tokensByBusiness: Record<string, string>,
- *   anthropicKey: string, serveDist: boolean, distDir: string,
+ *   anthropicKey: string, allowedModels: string[],
+ *   serveDist: boolean, distDir: string,
  *   backoffCapMs: number,
  * }} ProxyConfig */
 
@@ -64,6 +65,8 @@ export function configFromEnv(env) {
     systemToken: env.META_SYSTEM_TOKEN ?? '',
     tokensByBusiness,
     anthropicKey: env.ANTHROPIC_API_KEY ?? '',
+    // The only models /api/ai/narrate will forward (override via env csv).
+    allowedModels: (env.ANTHROPIC_ALLOWED_MODELS ?? 'claude-sonnet-5,claude-opus-5').split(',').map((s) => s.trim()).filter(Boolean),
     serveDist: env.SERVE_DIST === '1',
     distDir: env.DIST_DIR ?? path.resolve(__dirname, '..', 'dist'),
     backoffCapMs: Number(env.BACKOFF_CAP_MS ?? 8000),
@@ -92,39 +95,46 @@ export function isValidMetaPath(p) {
 }
 
 /** Redact every occurrence of the injected token from an upstream response body
- *  (Graph embeds it in paging.next URLs — it must not reach the browser).
+ *  (Graph embeds it in paging.next URLs — it must not reach the browser). Also
+ *  strips the percent-encoded form: a token inside an already-URL-encoded
+ *  paging.next would slip past an exact-string match.
  *  @param {string} body @param {string} token */
 export function redactToken(body, token) {
   if (!token) return body
-  return body.split(token).join('REDACTED')
+  let out = body.split(token).join('REDACTED')
+  const encoded = encodeURIComponent(token)
+  if (encoded !== token) out = out.split(encoded).join('REDACTED')
+  return out
 }
 
 /** Parse Meta's X-Business-Use-Case-Usage header → worst-case usage pct + the
- *  advertised regain time. Null when absent/unparseable.
+ *  advertised regain time. Null when absent/unparseable. NB Meta documents
+ *  estimated_time_to_regain_access in MINUTES (rate-limiting reference).
  *  @param {string | null} raw
- *  @returns {{ maxPct: number, regainSeconds: number } | null} */
+ *  @returns {{ maxPct: number, regainMinutes: number } | null} */
 export function parseBucHeader(raw) {
   if (!raw) return null
   try {
     const parsed = JSON.parse(raw)
     let maxPct = 0
-    let regainSeconds = 0
+    let regainMinutes = 0
     for (const arr of Object.values(parsed)) {
       for (const e of /** @type {Array<Record<string, number>>} */ (arr)) {
         maxPct = Math.max(maxPct, e.call_count ?? 0, e.total_cputime ?? 0, e.total_time ?? 0)
-        regainSeconds = Math.max(regainSeconds, e.estimated_time_to_regain_access ?? 0)
+        regainMinutes = Math.max(regainMinutes, e.estimated_time_to_regain_access ?? 0)
       }
     }
-    return { maxPct, regainSeconds }
+    return { maxPct, regainMinutes }
   } catch {
     return null
   }
 }
 
-/** Backoff wait before a retry, honouring Meta's regain hint but capped.
- *  @param {number} attempt @param {number | undefined} regainSeconds @param {number} capMs */
-export function backoffDelayMs(attempt, regainSeconds, capMs) {
-  const base = regainSeconds && regainSeconds > 0 ? regainSeconds * 1000 : 2 ** attempt * 1000
+/** Backoff wait before a retry, honouring Meta's regain hint (MINUTES) but
+ *  capped — the cap keeps a long throttle from parking a request for an hour.
+ *  @param {number} attempt @param {number | undefined} regainMinutes @param {number} capMs */
+export function backoffDelayMs(attempt, regainMinutes, capMs) {
+  const base = regainMinutes && regainMinutes > 0 ? regainMinutes * 60_000 : 2 ** attempt * 1000
   return Math.min(base, capMs)
 }
 
@@ -184,7 +194,7 @@ async function forwardToGraph(cfg, fwd) {
     const buc = parseBucHeader(res.headers.get('x-business-use-case-usage'))
     const throttled = res.status === 429 || (buc != null && buc.maxPct >= 95)
     if (throttled && attempt < 3) {
-      await sleep(backoffDelayMs(attempt, buc?.regainSeconds, cfg.backoffCapMs))
+      await sleep(backoffDelayMs(attempt, buc?.regainMinutes, cfg.backoffCapMs))
       continue
     }
     const text = await res.text()
@@ -276,6 +286,17 @@ export function createProxyServer(cfg) {
 
       /* -- Meta Graph forwarder -- */
       if (p.startsWith('/api/meta/')) {
+        // CSRF guard: a cross-origin page can fire a simple-request POST at a
+        // localhost proxy without any preflight — and a Graph write (pause,
+        // budget) executes even though the attacker can't read the response.
+        // Requiring a custom header forces a CORS preflight, which this server
+        // never answers, so browsers block the cross-origin attempt entirely.
+        // Meridian's client sends it on every call; curl users add
+        // -H 'x-meridian-client: 1'.
+        if (!req.headers['x-meridian-client']) {
+          sendJson(res, 403, { error: "Missing X-Meridian-Client header (CSRF guard) — send 'X-Meridian-Client: 1'." })
+          return
+        }
         const metaPath = p.slice('/api/meta/'.length)
         if (!isValidMetaPath(metaPath)) {
           sendJson(res, 400, { error: `Refusing to forward path "${metaPath}" — expected a version-prefixed Graph path like v25.0/act_123/insights.` })
@@ -317,6 +338,11 @@ export function createProxyServer(cfg) {
 
       /* -- Anthropic narrative forwarder (optional) -- */
       if (p === '/api/ai/narrate' && req.method === 'POST') {
+        // Same CSRF guard as /api/meta — this route spends the server's paid key.
+        if (!req.headers['x-meridian-client']) {
+          sendJson(res, 403, { error: "Missing X-Meridian-Client header (CSRF guard) — send 'X-Meridian-Client: 1'." })
+          return
+        }
         if (!cfg.anthropicKey) {
           sendJson(res, 503, { error: 'ANTHROPIC_API_KEY is not set — LLM narrative is disabled; heuristics keep working.' })
           return
@@ -334,6 +360,14 @@ export function createProxyServer(cfg) {
           sendJson(res, 400, { error: 'body must include model + messages[]' })
           return
         }
+        // Abuse guard on the paid key: only the app's known models, and a hard
+        // output cap — a compromised page can't run arbitrary expensive models
+        // or unbounded generations through this route.
+        if (!cfg.allowedModels.includes(payload.model)) {
+          sendJson(res, 400, { error: `model "${payload.model}" is not allowed (allowed: ${cfg.allowedModels.join(', ')}).` })
+          return
+        }
+        const maxTokens = Math.min(Math.max(1, Number(payload.max_tokens) || 600), 2000)
         const upstream = await fetch(`${cfg.anthropicBase}/v1/messages`, {
           method: 'POST',
           headers: {
@@ -345,7 +379,7 @@ export function createProxyServer(cfg) {
             model: payload.model,
             system: payload.system,
             messages: payload.messages,
-            max_tokens: payload.max_tokens ?? 600,
+            max_tokens: maxTokens,
           }),
         })
         const text = await upstream.text()

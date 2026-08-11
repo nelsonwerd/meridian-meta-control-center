@@ -20,6 +20,10 @@ import { DATA_TODAY, WINDOW_DAYS } from '../demo/generate'
    ========================================================================== */
 
 const WINDOW = 30
+/** loadSnapshot floors the pull window at 56 days — the default 28d view's
+ *  previous-period delta reaches back to day 56, and a shorter pull would
+ *  fabricate deltas / understate frequency and pacing. */
+const EFFECTIVE_WINDOW = 56
 const DAYS_OF_ROWS = 12
 
 /** Today in UTC — matches the fixture account's timezone_name: 'UTC', so the
@@ -127,6 +131,8 @@ function graphResponse(url: URL): unknown {
 }
 
 const seenRequests: Array<{ path: string; businessHeader: string | null; hasToken: boolean }> = []
+/** Every /insights request's window, for the P8 #16 time_range assertions. */
+const insightRequests: Array<{ since: string; until: string; timeIncrement: string | null }> = []
 
 describe('LiveProvider.loadSnapshot — full pipeline against a fake Graph', () => {
   let snapshot: Snapshot
@@ -139,6 +145,10 @@ describe('LiveProvider.loadSnapshot — full pipeline against a fake Graph', () 
         businessHeader: (init?.headers as Record<string, string> | undefined)?.['X-Meta-Business-Id'] ?? null,
         hasToken: url.searchParams.has('access_token'),
       })
+      if (url.pathname.endsWith('/insights') && url.searchParams.has('time_range')) {
+        const tr = JSON.parse(url.searchParams.get('time_range')!) as { since: string; until: string }
+        insightRequests.push({ since: tr.since, until: tr.until, timeIncrement: url.searchParams.get('time_increment') })
+      }
       return new Response(JSON.stringify(graphResponse(url)), { status: 200, headers: { 'content-type': 'application/json' } })
     })
     snapshot = await new LiveProvider(CFG).loadSnapshot()
@@ -165,9 +175,24 @@ describe('LiveProvider.loadSnapshot — full pipeline against a fake Graph', () 
     expect(snapshot.insightsByAd.get('7001')).toHaveLength(DAYS_OF_ROWS)
   })
 
-  it('anchors to the account timezone today + configured window', () => {
+  it('anchors to the account timezone today + floors the window at 56 days', () => {
     expect(snapshot.dataAnchor).toBe(utcToday())
-    expect(snapshot.windowDays).toBe(WINDOW)
+    expect(snapshot.windowDays).toBe(EFFECTIVE_WINDOW) // 30 configured → floored
+  })
+
+  it('requests anchor-frame insight windows: daily pull widened ±1 day, period pulls exact (P8 #16)', () => {
+    const daily = insightRequests.find((r) => r.timeIncrement === '1')!
+    expect(daily, 'daily ad-grain pull must exist').toBeDefined()
+    // widened one day each edge so tz-shifted accounts still cover every app date
+    expect(daily.since).toBe(daysAgo(EFFECTIVE_WINDOW))
+    expect(daily.until).toBe(daysAgo(-1))
+    // the 7d period-reach pull is exact — [anchor-6, anchor]
+    const p7 = insightRequests.find((r) => !r.timeIncrement && r.since === daysAgo(6))
+    expect(p7, 'a 7d summary reach pull must exist').toBeDefined()
+    expect(p7!.until).toBe(daysAgo(0))
+    // the full-window period pull matches the FLOORED window
+    const full = insightRequests.find((r) => !r.timeIncrement && r.since === daysAgo(EFFECTIVE_WINDOW - 1))
+    expect(full, 'a full-window summary reach pull must exist').toBeDefined()
   })
 
   it('never sends a token from the browser; routes the business id header', () => {
