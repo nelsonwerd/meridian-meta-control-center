@@ -58,6 +58,7 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
   const dismiss = useStore((st) => st.dismissSuggestion)
   const openDrawer = useStore((st) => st.openDrawer)
   const applied = useStore((st) => st.appliedSuggestionIds.has(s.id))
+  const providerMode = useStore((st) => st.providerMode)
   const openEntity = () => openDrawer({ level: s.level, entityId: s.entityId })
   const [confirming, setConfirming] = useState(false)
   const meta = META[s.type]
@@ -131,8 +132,13 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
               <Check className="h-3.5 w-3.5" /> Applied
             </span>
           ) : confirming ? (
-            // lightweight two-step confirm — the button already states the exact change
+            // lightweight two-step confirm — the button states the exact change,
+            // and in LIVE mode says so explicitly: this POSTs to Meta and there
+            // is no client-side undo (a real revert is a compensating write).
             <div className="flex items-center gap-1.5">
+              {providerMode === 'live' && (
+                <span className="text-2xs font-medium text-danger">Real change via Meta API — no undo</span>
+              )}
               <button
                 onClick={() => setConfirming(false)}
                 className="flex h-8 items-center rounded-lg px-2 text-xs font-medium text-ink-subtle hover:bg-surface-3 hover:text-ink"
@@ -140,7 +146,7 @@ export function SuggestionCard({ s, showClient = true }: { s: Suggestion; showCl
                 Cancel
               </button>
               <button onClick={() => { apply(s); setConfirming(false) }} className="btn-primary bg-danger py-1.5 text-xs">
-                Confirm: {s.action.label}
+                {providerMode === 'live' ? `Confirm live: ${s.action.label}` : `Confirm: ${s.action.label}`}
               </button>
             </div>
           ) : (
