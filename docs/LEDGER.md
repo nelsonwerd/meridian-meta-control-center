@@ -10,7 +10,7 @@
 | Capability | How it was verified |
 |---|---|
 | Production build + strict typecheck | `npm run build` → tsc clean (`noUnusedLocals`/`noUnusedParameters` now on), 2422 modules; output code-split into app / react / recharts chunks |
-| Automated test suite | `npm run test:run` → **33 Vitest tests green** across 6 suites (currencyOffset, metrics/safeDiv, date math, engine gating + determinism, weekly report, DOA boundary) |
+| Automated test suite | `npm run test:run` → **134 Vitest tests green** across 17 suites: the original data/engine suites, demo goldens (byte-identical through the live refactor), Graph→domain mapping fixtures, a full fake-Graph loadSnapshot integration run, async report jobs, period-reach math, transport (pagination/multi-account/failure paths/throttle), write path, and 21 proxy tests vs a mock upstream |
 | Lint + CI | `npm run lint` → ESLint (typescript-eslint + react-hooks) clean; GitHub Actions runs lint + build + tests on every push/PR |
 | Deterministic demo dataset | `__meridian.summary()` / `.clientCPAs()` — 7 clients, 3 BMs, ~26 campaigns, ~250 ads, ~13.5k daily insight rows; per-client CPA clusters around each target |
 | Metric roll-ups | selectors aggregate ad→adset→campaign→client→portfolio over any range; verified against debug surface |
@@ -31,11 +31,15 @@
 
 > The live mile (P1–P7, 2026-08-11) is **implemented end-to-end and verified
 > against a faked Graph API in tests** — the throw is gone, the pipeline works.
-> "Machine-verified" means: 124 Vitest tests exercise it against realistic
-> v26-shaped fixtures and an in-process mock upstream, and the AI engine
-> produces correct findings from live-shaped data. It does **NOT** mean it has
-> ever touched a real ad account. Every row below carries a 🚪 human gate that
-> needs the operator's real token + account (see `META_INTEGRATION.md`).
+> "Machine-verified" means: 134 Vitest tests exercise it against realistic
+> v26-shaped fixtures and an in-process mock upstream, the AI engine produces
+> correct findings from live-shaped data, and a 37-agent adversarial review
+> (6 lanes → per-finding skeptics) confirmed 31 defects which were ALL fixed
+> in the same run (windowDays floor, timezone window buffers, orphaned-ad
+> totals, CSRF guard on the proxy, BUC minutes semantics, and more — see the
+> `review:` commit). It does **NOT** mean it has ever touched a real ad
+> account. Every row below carries a 🚪 human gate that needs the operator's
+> real token + account (see `META_INTEGRATION.md`).
 
 | Thing | State | 🚪 Human gate |
 |---|---|---|
