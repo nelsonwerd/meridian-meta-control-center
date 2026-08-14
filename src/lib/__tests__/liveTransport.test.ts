@@ -10,14 +10,23 @@ import { DATA_TODAY, WINDOW_DAYS } from '../demo/generate'
 type Handler = (url: URL, init?: RequestInit) => { status?: number; headers?: Record<string, string>; body: unknown }
 
 function stubGraph(handler: Handler) {
-  const calls: Array<{ method: string; path: string; after: string | null; business: string | null }> = []
+  const calls: Array<{ method: string; path: string; after: string | null; business: string | null; spanDays?: number; isDaily?: boolean }> = []
   vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input))
+    // width of a time_range, so tests can assert which windows were requested
+    let spanDays: number | undefined
+    const tr = url.searchParams.get('time_range')
+    if (tr) {
+      const { since, until } = JSON.parse(tr) as { since: string; until: string }
+      spanDays = Math.round((Date.parse(until) - Date.parse(since)) / 86_400_000) + 1
+    }
     calls.push({
       method: init?.method ?? 'GET',
       path: url.pathname,
       after: url.searchParams.get('after'),
       business: (init?.headers as Record<string, string> | undefined)?.['X-Meta-Business-Id'] ?? null,
+      spanDays,
+      isDaily: url.searchParams.get('time_increment') === '1',
     })
     const out = handler(url, init)
     return new Response(JSON.stringify(out.body), {
@@ -115,6 +124,72 @@ describe('failure paths (P8 #18, #19, #22)', () => {
     expect(bad.ok).toBe(false)
     expect(bad.detail).toContain('Connection failed')
     expect(await new LiveProvider(cfg([])).checkConnection()).toEqual({ ok: false, detail: 'No accounts configured.' })
+  })
+})
+
+describe('large-account resilience (found by real live use, 2026-08-14)', () => {
+  /** Meta's "reduce the amount of data" refusal on an oversized sync query. */
+  const TOO_MUCH = { status: 500, body: { error: { code: 1, message: "Please reduce the amount of data you're asking for, then retry your request" } } }
+
+  it('a refused period-reach pull DEGRADES to additive — it never kills the snapshot', async () => {
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/campaigns')) return { body: { data: [{ id: 'c1', name: 'C', effective_status: 'ACTIVE' }] } }
+      if (url.pathname.endsWith('/insights')) {
+        // daily pull fine; every unique-reach (summary) pull refused
+        return url.searchParams.get('time_increment') === '1'
+          ? { body: { data: [{ ad_id: 'a1', date_start: '2026-08-01', spend: '10', impressions: '100', reach: '50' }] } }
+          : TOO_MUCH
+      }
+      return { body: { data: [] } }
+    })
+    const snap = await new LiveProvider(ONE).loadSnapshot()
+    // The snapshot still loads with real data — reach just isn't corrected.
+    expect(snap.campaigns).toHaveLength(1)
+    expect(snap.insights.length).toBeGreaterThan(0)
+    expect(snap.periodReachByAd?.size ?? 0).toBe(0)
+  })
+
+  it('a refused SYNC insights pull escalates to an async report job', async () => {
+    let syncTried = false
+    let asyncUsed = false
+    stubGraph((url, init) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/act_1/insights')) {
+        if (init?.method === 'POST') {
+          asyncUsed = true
+          return { body: { report_run_id: 'rr_esc' } }
+        }
+        if (url.searchParams.get('time_increment') === '1') {
+          syncTried = true
+          return TOO_MUCH // Meta refuses the sync daily pull
+        }
+        return { body: { data: [] } } // reach pulls
+      }
+      if (url.pathname.endsWith('/rr_esc')) return { body: { async_status: 'Job Completed' } }
+      if (url.pathname.endsWith('/rr_esc/insights')) return { body: { data: [{ ad_id: 'a1', date_start: '2026-08-01', spend: '5' }] } }
+      return { body: { data: [] } }
+    })
+    // windowDays 56 sits UNDER the async threshold, so it starts on the sync path
+    const snap = await new LiveProvider(cfg([{ clientId: 'c_a', adAccountId: 'act_1', businessId: 'b1' }]), { baseDelayMs: 1, maxPolls: 5 }).loadSnapshot()
+    expect(syncTried).toBe(true)
+    expect(asyncUsed).toBe(true)
+    expect(snap.insights).toHaveLength(1) // recovered via the async job
+  })
+
+  it("does NOT request the 'full' window reach (the query Meta refuses)", async () => {
+    const calls = stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      return { body: { data: [] } }
+    })
+    await new LiveProvider(ONE).loadSnapshot()
+    // reach pulls only — the daily pull legitimately spans the whole window
+    const reachWindows = calls
+      .filter((c) => c.path.endsWith('/act_1/insights') && c.method === 'GET' && !c.isDaily)
+      .map((c) => c.spanDays)
+      .filter((d): d is number => d != null)
+    expect(reachWindows.length).toBeGreaterThan(0)
+    expect(Math.max(...reachWindows)).toBeLessThanOrEqual(28) // 28d is the widest; never the 56d full window
   })
 })
 

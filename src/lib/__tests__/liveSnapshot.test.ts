@@ -190,9 +190,18 @@ describe('LiveProvider.loadSnapshot — full pipeline against a fake Graph', () 
     const p7 = insightRequests.find((r) => !r.timeIncrement && r.since === daysAgo(6))
     expect(p7, 'a 7d summary reach pull must exist').toBeDefined()
     expect(p7!.until).toBe(daysAgo(0))
-    // the full-window period pull matches the FLOORED window
-    const full = insightRequests.find((r) => !r.timeIncrement && r.since === daysAgo(EFFECTIVE_WINDOW - 1))
-    expect(full, 'a full-window summary reach pull must exist').toBeDefined()
+    // The 'full' window reach pull is deliberately NOT made: ad-level unique
+    // counts over the whole history are the query Meta refuses on real
+    // accounts (error code 1), and no date preset requests that range.
+    const fullReach = insightRequests.find((r) => !r.timeIncrement && r.since === daysAgo(EFFECTIVE_WINDOW - 1))
+    expect(fullReach, 'the full-window reach pull must NOT be requested').toBeUndefined()
+    // …and no summary reach pull spans more than 28 days
+    const widestReach = Math.max(
+      ...insightRequests
+        .filter((r) => !r.timeIncrement)
+        .map((r) => Math.round((Date.parse(r.until) - Date.parse(r.since)) / 86_400_000) + 1),
+    )
+    expect(widestReach).toBeLessThanOrEqual(28)
   })
 
   it('never sends a token from the browser; routes the business id header', () => {

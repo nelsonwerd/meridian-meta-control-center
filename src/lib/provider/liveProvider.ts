@@ -20,8 +20,8 @@ import {
   periodBoundsFor,
   placeholderCreative,
   synthesizeBusinessManagers,
-  PERIOD_KEY_LIST,
   PURCHASE_ACTION,
+  REACH_PERIOD_KEYS,
   UNMAPPED_BM_ID,
   type RawAd,
   type RawAdSet,
@@ -494,10 +494,25 @@ export class LiveProvider implements DataProvider {
       }
       // Long windows go through an async report job (a sync GET would time
       // out); short pulls stay on the paginated sync path.
-      const adRows =
-        windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS
-          ? await runAsyncInsightsJob<any>(acct.adAccountId, insightParams, acct.businessId, this.asyncOpts)
-          : await graphGet<any>(`${acct.adAccountId}/insights`, insightParams, acct.businessId)
+      // Long windows go straight to an async report job. Shorter ones try the
+      // fast sync path first and ESCALATE to async if Meta refuses the volume
+      // ("Please reduce the amount of data you're asking for", error code 1).
+      // Account size varies by orders of magnitude, so reacting to the actual
+      // response beats guessing a day threshold that is wrong for somebody.
+      let adRows: any[]
+      if (windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS) {
+        adRows = await runAsyncInsightsJob<any>(acct.adAccountId, insightParams, acct.businessId, this.asyncOpts)
+      } else {
+        try {
+          adRows = await graphGet<any>(`${acct.adAccountId}/insights`, insightParams, acct.businessId)
+        } catch (e) {
+          console.warn(
+            `[meridian] sync insights pull refused for ${acct.adAccountId} (${windowDays}d) — escalating to an async report job.`,
+            e,
+          )
+          adRows = await runAsyncInsightsJob<any>(acct.adAccountId, insightParams, acct.businessId, this.asyncOpts)
+        }
+      }
       for (const r of adRows) {
         insights.push(mapInsightRow(r, acct.clientId, purchaseAction))
       }
@@ -531,25 +546,40 @@ export class LiveProvider implements DataProvider {
       // ---- TRUE period reach per ad (P4) ----
       // A summary query (NO time_increment) returns ONE row per ad whose reach
       // is de-duplicated over the whole time_range — the only correct way to
-      // get period frequency (daily reach must never be summed). One small
-      // pull per canonical window; unique metrics belong in separate calls per
-      // Meta's own best practice. Windows are anchored to the snapshot anchor
-      // so they match the ranges the UI/engine will request.
-      for (const key of PERIOD_KEY_LIST) {
+      // get period frequency (daily reach must never be summed). Windows are
+      // anchored to the snapshot anchor so they match what the UI/engine ask
+      // for; unique metrics get their own calls per Meta's best practice.
+      //
+      // These are the most expensive queries Meta serves (ad-level unique
+      // counts), and on a large account they can exceed what it will compute
+      // synchronously — error code 1, "Please reduce the amount of data you're
+      // asking for". Period reach is a REFINEMENT, not core data: when a window
+      // fails we drop that window and the metrics layer falls back to the
+      // labelled additive approximation. Losing an enhancement must never cost
+      // the operator their whole snapshot.
+      for (const key of REACH_PERIOD_KEYS) {
         const b = periodBoundsFor(key, anchor, windowDays)
-        const reachRows = await graphGet<{ ad_id: string; reach?: string }>(
-          `${acct.adAccountId}/insights`,
-          { level: 'ad', fields: 'ad_id,reach', time_range: JSON.stringify({ since: b.start, until: b.end }) },
-          acct.businessId,
-        )
-        for (const r of reachRows) {
-          if (!r.ad_id) continue
-          let entry = periodReachByAd.get(r.ad_id)
-          if (!entry) {
-            entry = {}
-            periodReachByAd.set(r.ad_id, entry)
+        try {
+          const reachRows = await graphGet<{ ad_id: string; reach?: string }>(
+            `${acct.adAccountId}/insights`,
+            { level: 'ad', fields: 'ad_id,reach', time_range: JSON.stringify({ since: b.start, until: b.end }) },
+            acct.businessId,
+          )
+          for (const r of reachRows) {
+            if (!r.ad_id) continue
+            let entry = periodReachByAd.get(r.ad_id)
+            if (!entry) {
+              entry = {}
+              periodReachByAd.set(r.ad_id, entry)
+            }
+            entry[key] = Number(r.reach ?? 0)
           }
-          entry[key] = Number(r.reach ?? 0)
+        } catch (e) {
+          console.warn(
+            `[meridian] period-reach pull failed for ${acct.adAccountId} ${key} (${b.start}→${b.end}); ` +
+              `frequency for that window falls back to the additive approximation.`,
+            e,
+          )
         }
       }
     }

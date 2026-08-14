@@ -353,6 +353,19 @@ export function addDaysIso(iso: ISODate, days: number): ISODate {
   return d.toISOString().slice(0, 10)
 }
 
+/** Ad accounts are the ONE Graph node that must carry the `act_` prefix — a
+ *  bare numeric id resolves to nothing and Meta answers "Object with ID '…'
+ *  does not exist, cannot be loaded due to missing permissions, or does not
+ *  support this operation", which reads like a permissions problem and isn't.
+ *  Operators copy the bare number out of Ads Manager constantly, so normalize
+ *  rather than punish. Returns '' for anything that isn't an ad account id. */
+export function normalizeAdAccountId(raw: string): string {
+  const v = raw.trim()
+  if (/^act_\d+$/.test(v)) return v
+  if (/^\d+$/.test(v)) return `act_${v}`
+  return ''
+}
+
 /** Every screen that lists clients groups them under a BusinessManager row —
  *  a client whose bmId matches nothing is INVISIBLE in the directory and the
  *  scope switcher. An empty businessId therefore lands in this fallback group
@@ -474,6 +487,16 @@ export function mapCreative(raw: RawCreative, ctx: MapContext, createdAtHint?: I
 /* --------------------------- period windows ------------------------------ */
 
 export const PERIOD_KEY_LIST: PeriodKey[] = ['3d', '7d', '14d', '28d', 'prev7', 'prev14', 'full']
+
+/** The windows we actually pull TRUE de-duplicated reach for.
+ *
+ *  Deliberately EXCLUDES 'full': spanning the entire history at ad-level unique
+ *  counts is by far the most expensive query Meta serves — on a real account it
+ *  returns error code 1 ("reduce the amount of data") — and no date preset ever
+ *  requests that range (they top out at 28 days). Only a hand-picked custom
+ *  full-window range would match it, and that case falls back to the labelled
+ *  additive approximation, which is the documented behaviour anyway. */
+export const REACH_PERIOD_KEYS: PeriodKey[] = ['3d', '7d', '14d', '28d', 'prev7', 'prev14']
 
 /** {since,until} for a canonical period against an explicit anchor — MUST
  *  mirror metrics.periodBounds() (which reads the app-level anchor) so the

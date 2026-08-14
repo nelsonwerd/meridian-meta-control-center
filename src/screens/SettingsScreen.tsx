@@ -6,7 +6,7 @@ import { useSnapshot } from '../app/hooks'
 import { useStore } from '../app/store'
 import { createProvider, getProviderMode, type ProviderMode } from '../lib/provider'
 import { API_VERSION, loadLiveConfig, saveLiveConfig, type LiveConfig } from '../lib/provider/liveProvider'
-import { ensureClientCosmetics } from '../lib/provider/liveMap'
+import { ensureClientCosmetics, normalizeAdAccountId } from '../lib/provider/liveMap'
 import { WINDOW_DAYS } from '../lib/demo/generate'
 import { isLlmEnabled, NARRATIVE_MODEL, PROXY_ENDPOINT, setLlmEnabled, STRATEGY_MODEL } from '../lib/ai/llm'
 import { EDITABLE_THRESHOLDS, THRESHOLDS, effectiveThresholds, type Preset } from '../lib/ai/thresholds'
@@ -104,6 +104,13 @@ export function SettingsScreen() {
       pushToast('error', `Not saved — ${incomplete.length} row(s) missing an ad account or business id: ${incomplete.map((r) => r.clientName || r.clientId).join(', ')}.`)
       return
     }
+    // Catch a malformed ad account id HERE, with a clear message, rather than
+    // 40 seconds into a live load as an opaque Graph "object does not exist".
+    const badIds = rows.filter((r) => !normalizeAdAccountId(r.adAccountId))
+    if (badIds.length > 0) {
+      pushToast('error', `Not saved — ad account id must be digits (with or without the act_ prefix): ${badIds.map((r) => r.clientName || r.adAccountId).join(', ')}.`)
+      return
+    }
     if (rows.length === 0) {
       pushToast('error', 'Not saved — add at least one client row.')
       return
@@ -113,7 +120,7 @@ export function SettingsScreen() {
     const cfg: LiveConfig = {
       accounts: rows.map((r) => ({
         clientId: r.clientId,
-        adAccountId: r.adAccountId.trim(),
+        adAccountId: normalizeAdAccountId(r.adAccountId), // adds act_ if omitted
         businessId: r.businessId.trim(),
         businessName: r.businessName.trim() || undefined,
         businessType: r.businessType,
