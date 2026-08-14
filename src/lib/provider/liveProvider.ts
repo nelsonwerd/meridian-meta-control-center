@@ -217,15 +217,17 @@ async function graphFetch(url: string, businessId?: string, attempt = 0): Promis
 }
 
 /** Paginated EDGE read (returns the full data[] across pages). */
-async function graphGet<T>(path: string, params: Record<string, string>, businessId?: string): Promise<T[]> {
+async function graphGet<T>(path: string, params: Record<string, string>, businessId?: string, pageSize = 200): Promise<T[]> {
   const out: T[] = []
   let after: string | undefined
   let pages = 0
   do {
-    const res = await graphFetch(buildUrl(path, params, { limit: '200', ...(after ? { after } : {}) }), businessId)
+    const res = await graphFetch(buildUrl(path, params, { limit: String(pageSize), ...(after ? { after } : {}) }), businessId)
     if (!res.ok) {
       const body = await res.text()
-      throw new Error(`Graph ${res.status}: ${body.slice(0, 300)}`)
+      // Name the endpoint: a bare "Graph 500" leaves an operator guessing which
+      // of ~10 calls failed. The path is the first thing you need.
+      throw new Error(`Graph ${res.status} on GET ${path}: ${body.slice(0, 240)}`)
     }
     const page = (await res.json()) as GraphPage<T>
     out.push(...(page.data ?? []))
@@ -245,7 +247,7 @@ async function graphGetNode<T>(path: string, params: Record<string, string>, bus
   const res = await graphFetch(buildUrl(path, params), businessId)
   if (!res.ok) {
     const body = await res.text()
-    throw new Error(`Graph ${res.status}: ${body.slice(0, 300)}`)
+    throw new Error(`Graph ${res.status} on GET ${path}: ${body.slice(0, 240)}`)
   }
   const node = (await res.json()) as T & { error?: unknown }
   if (!node || typeof node !== 'object' || node.error) {
@@ -419,11 +421,27 @@ export class LiveProvider implements DataProvider {
         { fields: 'name,adset_id,campaign_id,status,effective_status,creative{id},created_time' },
         acct.businessId,
       )
-      const rawCreatives = await graphGet<RawCreative>(
-        `${acct.adAccountId}/adcreatives`,
-        { fields: 'name,object_story_spec,asset_feed_spec,object_story_id' },
-        acct.businessId,
-      )
+      // Creatives are an ENHANCEMENT (angle/format inference for Creative Lab),
+      // not core data — every ad already falls back to a placeholder creative.
+      // This is also the heaviest structure pull: asset_feed_spec is a large
+      // nested object, so a creative-rich account can blow the sync limit
+      // ("reduce the amount of data", code 1). Degrade rather than deny the
+      // operator their entire dashboard. Smaller pages for the same reason.
+      let rawCreatives: RawCreative[] = []
+      try {
+        rawCreatives = await graphGet<RawCreative>(
+          `${acct.adAccountId}/adcreatives`,
+          { fields: 'name,object_story_spec,asset_feed_spec,object_story_id' },
+          acct.businessId,
+          50,
+        )
+      } catch (e) {
+        console.warn(
+          `[meridian] adcreatives pull failed for ${acct.adAccountId} — Creative Lab will fall back to placeholder ` +
+            `creatives (angle/format inference unavailable). Everything else is unaffected.`,
+          e,
+        )
+      }
 
       const mappedCampaigns = rawCampaigns.map((r) => mapCampaign(r, ctx))
       const mappedAdSets = rawAdSets.map((r) => mapAdSet(r, ctx))

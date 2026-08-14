@@ -177,6 +177,32 @@ describe('large-account resilience (found by real live use, 2026-08-14)', () => 
     expect(snap.insights).toHaveLength(1) // recovered via the async job
   })
 
+  it('a refused adcreatives pull degrades to placeholders — dashboard still loads', async () => {
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/adcreatives')) return TOO_MUCH // the heaviest structure pull
+      if (url.pathname.endsWith('/campaigns')) return { body: { data: [{ id: 'c1', name: 'C', effective_status: 'ACTIVE' }] } }
+      if (url.pathname.endsWith('/ads')) return { body: { data: [{ id: 'a1', name: 'Ad One', adset_id: 's1', campaign_id: 'c1', effective_status: 'ACTIVE', creative: { id: 'cr1' } }] } }
+      return { body: { data: [] } }
+    })
+    const snap = await new LiveProvider(ONE).loadSnapshot()
+    expect(snap.campaigns).toHaveLength(1)
+    expect(snap.ads).toHaveLength(1)
+    // every ad still resolves a creative, so CreativeThumb/cohorts never crash
+    const cr = snap.creativeById.get(snap.ads[0].creativeId)
+    expect(cr).toBeDefined()
+    expect(cr!.thumbnailGradient).toHaveLength(2)
+  })
+
+  it('Graph errors name the failing endpoint (so an operator can act on them)', async () => {
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/adsets')) return TOO_MUCH
+      return { body: { data: [] } }
+    })
+    await expect(new LiveProvider(ONE).loadSnapshot()).rejects.toThrow(/adsets/)
+  })
+
   it("does NOT request the 'full' window reach (the query Meta refuses)", async () => {
     const calls = stubGraph((url) => {
       if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
