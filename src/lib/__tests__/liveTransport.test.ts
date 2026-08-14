@@ -194,6 +194,38 @@ describe('large-account resilience (found by real live use, 2026-08-14)', () => 
     expect(cr!.thumbnailGradient).toHaveLength(2)
   })
 
+  it('a deprecated insights field is dropped and retried, not fatal', async () => {
+    // Meta removed video_3_sec_watched_actions on 2026-06-15; simulate ANY
+    // future deprecation the same way — one stale name rejects the whole call.
+    const DEPRECATED = 'video_continuous_2_sec_watched_actions'
+    const fieldsSeen: string[] = []
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/act_1/insights')) {
+        const fields = url.searchParams.get('fields') ?? ''
+        if (url.searchParams.get('time_increment') === '1') {
+          fieldsSeen.push(fields)
+          if (fields.includes(DEPRECATED)) {
+            return {
+              status: 400,
+              body: { error: { code: 100, type: 'OAuthException', message: `(#100) ${DEPRECATED} is not valid for fields param. please check ...` } },
+            }
+          }
+          return { body: { data: [{ ad_id: 'a1', date_start: '2026-08-01', spend: '12', impressions: '100' }] } }
+        }
+        return { body: { data: [] } }
+      }
+      return { body: { data: [] } }
+    })
+
+    const snap = await new LiveProvider(ONE).loadSnapshot()
+    expect(fieldsSeen.length).toBe(2) // first rejected, retry without the field
+    expect(fieldsSeen[0]).toContain(DEPRECATED)
+    expect(fieldsSeen[1]).not.toContain(DEPRECATED)
+    expect(fieldsSeen[1]).toContain('spend') // the rest of the field list survives
+    expect(snap.insights).toHaveLength(1) // and the data actually loads
+  })
+
   it('Graph errors name the failing endpoint (so an operator can act on them)', async () => {
     stubGraph((url) => {
       if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }

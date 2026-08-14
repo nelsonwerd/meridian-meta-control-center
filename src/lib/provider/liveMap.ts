@@ -561,7 +561,12 @@ export function mapInsightRow(r: any, clientId: string, purchaseAction: string):
       actionVal(r.actions, 'offsite_conversion.fct.add_to_cart'),
     landingPageViews: actionVal(r.actions, 'landing_page_view'),
     videoPlays: actionVal(r.video_play_actions, 'video_view'),
-    video3s: actionVal(r.video_3_sec_watched_actions, 'video_view'),
+    // Hook-rate numerator. Meta removed video_3_sec_watched_actions on
+    // 2026-06-15; continuous-2-sec is the replacement. The old name is still
+    // read as a fallback so historical/cached rows keep working.
+    video3s:
+      actionVal(r.video_continuous_2_sec_watched_actions, 'video_view') ||
+      actionVal(r.video_3_sec_watched_actions, 'video_view'),
     videoThruplays: actionVal(r.video_thruplay_watched_actions, 'video_view'),
   }
 }

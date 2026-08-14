@@ -76,7 +76,10 @@ export const INSIGHT_FIELDS = [
   'actions', // purchase, add_to_cart, landing_page_view live here
   'action_values', // purchase value → revenue
   'video_play_actions',
-  'video_3_sec_watched_actions',
+  // video_3_sec_watched_actions was REMOVED 2026-06-15 (Meta pulled the date in
+  // from 06-30). video_continuous_2_sec_watched_actions is its replacement and
+  // is what now feeds hook rate.
+  'video_continuous_2_sec_watched_actions',
   'video_thruplay_watched_actions',
   // NB deliberately NOT requested (mapInsightRow never reads them; insights CPU
   // is billed per field): frequency, outbound_clicks, purchase_roas,
@@ -329,6 +332,42 @@ export async function runAsyncInsightsJob<T>(
   throw new Error(`Async insights job for ${actId} did not complete after ${maxPolls} polls — try a narrower window.`)
 }
 
+/** Meta rejects a request whose `fields` contains ANY name it no longer serves:
+ *  "(#100) <field> is not valid for fields param". Fields get deprecated on a
+ *  schedule (video_3_sec_watched_actions vanished 2026-06-15), so a hard-coded
+ *  list is a scheduled outage — one stale name and the operator gets nothing.
+ *  Parse the offending field out of the error, drop it, retry. The snapshot
+ *  loses one metric instead of the whole load, and says so. */
+const INVALID_FIELD_RE = /\(#100\)\s+([A-Za-z0-9_]+)\s+is not valid for fields param/i
+
+export async function withFieldFallback<T>(
+  run: (fields: string) => Promise<T>,
+  fields: string,
+  maxDrops = 4,
+): Promise<T> {
+  let current = fields
+  for (let dropped = 0; ; dropped++) {
+    try {
+      return await run(current)
+    } catch (e) {
+      const message = (e as Error)?.message ?? ''
+      const match = INVALID_FIELD_RE.exec(message)
+      if (!match || dropped >= maxDrops) throw e
+      const bad = match[1]
+      const next = current
+        .split(',')
+        .filter((f) => f !== bad && !f.endsWith(`,${bad}`))
+        .join(',')
+      if (next === current) throw e // couldn't actually remove it — don't spin
+      console.warn(
+        `[meridian] Meta rejected insights field "${bad}" (likely deprecated). Dropping it and retrying; ` +
+          `any metric derived from it will read 0. Update INSIGHT_FIELDS to silence this.`,
+      )
+      current = next
+    }
+  }
+}
+
 export class LiveProvider implements DataProvider {
   readonly mode = 'live' as const
   constructor(
@@ -504,12 +543,12 @@ export class LiveProvider implements DataProvider {
       // 2025-06-10 Meta disregards the unified-attribution override params
       // anyway. (7d_view/28d_view were removed 2026-01-12 and would return
       // empty silently — never request them.)
-      const insightParams = {
+      const insightParams = (fields: string) => ({
         level: 'ad',
         time_increment: '1',
-        fields: `ad_id,${INSIGHT_FIELDS}`,
+        fields,
         time_range: JSON.stringify({ since, until }),
-      }
+      })
       // Long windows go through an async report job (a sync GET would time
       // out); short pulls stay on the paginated sync path.
       // Long windows go straight to an async report job. Shorter ones try the
@@ -517,20 +556,26 @@ export class LiveProvider implements DataProvider {
       // ("Please reduce the amount of data you're asking for", error code 1).
       // Account size varies by orders of magnitude, so reacting to the actual
       // response beats guessing a day threshold that is wrong for somebody.
-      let adRows: any[]
-      if (windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS) {
-        adRows = await runAsyncInsightsJob<any>(acct.adAccountId, insightParams, acct.businessId, this.asyncOpts)
-      } else {
+      // Both paths run under withFieldFallback: a field Meta has deprecated
+      // rejects the entire request, and that must cost one metric, not the load.
+      const adRows = await withFieldFallback<any[]>(async (fields) => {
+        const params = insightParams(fields)
+        if (windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS) {
+          return runAsyncInsightsJob<any>(acct.adAccountId, params, acct.businessId, this.asyncOpts)
+        }
         try {
-          adRows = await graphGet<any>(`${acct.adAccountId}/insights`, insightParams, acct.businessId)
+          return await graphGet<any>(`${acct.adAccountId}/insights`, params, acct.businessId)
         } catch (e) {
+          // Re-throw invalid-field errors so withFieldFallback can drop the
+          // field; only volume refusals justify escalating to an async job.
+          if (INVALID_FIELD_RE.test((e as Error)?.message ?? '')) throw e
           console.warn(
             `[meridian] sync insights pull refused for ${acct.adAccountId} (${windowDays}d) — escalating to an async report job.`,
             e,
           )
-          adRows = await runAsyncInsightsJob<any>(acct.adAccountId, insightParams, acct.businessId, this.asyncOpts)
+          return runAsyncInsightsJob<any>(acct.adAccountId, params, acct.businessId, this.asyncOpts)
         }
-      }
+      }, `ad_id,${INSIGHT_FIELDS}`)
       for (const r of adRows) {
         insights.push(mapInsightRow(r, acct.clientId, purchaseAction))
       }
