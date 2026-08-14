@@ -177,6 +177,49 @@ function parseBuc(res: Response): BucUsage | null {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Throttling. Meta signals "you're calling too much" in several shapes, and
+   only HTTP 429 was recognized before — an ad-account throttle arrives as an
+   HTTP 400 with error code 17 ("There have been too many calls to this
+   ad-account"), so it surfaced as a raw Graph dump AND the loader carried on
+   burning the remaining budget on other accounts and windows.
+
+   Throttles are minutes-to-an-hour long, so retrying inside the request is
+   pointless: fail fast, say how long to wait, and stop making calls.
+   ------------------------------------------------------------------------- */
+
+/** code 4 = app-level cap · 17 = per-user/ad-account cap · 613 = calls exceeded
+ *  · 80000-80009 = per-business-use-case throttles (subcode 2446079). */
+const THROTTLE_CODES = new Set([4, 17, 613, 80000, 80001, 80002, 80003, 80004, 80005, 80006, 80008, 80009, 80014])
+
+export function isThrottleError(status: number, body: string): boolean {
+  if (status === 429) return true
+  try {
+    const code = (JSON.parse(body) as { error?: { code?: number } })?.error?.code
+    if (typeof code === 'number' && THROTTLE_CODES.has(code)) return true
+  } catch {
+    /* not JSON — fall through to the text probe */
+  }
+  return /too many calls|request limit reached|exceeded the rate limit/i.test(body)
+}
+
+/** Thrown instead of a raw Graph error so the boot screen can say something an
+ *  operator can act on. Deliberately NOT swallowed by the degrade-on-failure
+ *  paths (reach, creatives) — continuing would dig the hole deeper. */
+export class RateLimitedError extends Error {
+  readonly retryAfterMinutes: number | null
+  constructor(retryAfterMinutes: number | null, endpoint: string) {
+    const wait = retryAfterMinutes && retryAfterMinutes > 0 ? `about ${retryAfterMinutes} minute(s)` : 'roughly an hour'
+    super(
+      `Meta is rate-limiting this ad account — too many API calls in the last hour. ` +
+        `Wait ${wait} and try again; nothing was changed and your campaigns are unaffected. ` +
+        `Tip: load one account at a time, and avoid repeated reloads while throttled. (Hit on ${endpoint}.)`,
+    )
+    this.name = 'RateLimitedError'
+    this.retryAfterMinutes = retryAfterMinutes
+  }
+}
+
 function buildUrl(path: string, params: Record<string, string>, extra: Record<string, string> = {}): string {
   // NO access_token here — the proxy injects it server-side. A token in this
   // query string would be a security regression (and the proxy rejects it).
@@ -228,6 +271,7 @@ async function graphGet<T>(path: string, params: Record<string, string>, busines
     const res = await graphFetch(buildUrl(path, params, { limit: String(pageSize), ...(after ? { after } : {}) }), businessId)
     if (!res.ok) {
       const body = await res.text()
+      if (isThrottleError(res.status, body)) throw new RateLimitedError(parseBuc(res)?.estimatedTimeToRegainAccess ?? null, `GET ${path}`)
       // Name the endpoint: a bare "Graph 500" leaves an operator guessing which
       // of ~10 calls failed. The path is the first thing you need.
       throw new Error(`Graph ${res.status} on GET ${path}: ${body.slice(0, 240)}`)
@@ -250,6 +294,7 @@ async function graphGetNode<T>(path: string, params: Record<string, string>, bus
   const res = await graphFetch(buildUrl(path, params), businessId)
   if (!res.ok) {
     const body = await res.text()
+    if (isThrottleError(res.status, body)) throw new RateLimitedError(parseBuc(res)?.estimatedTimeToRegainAccess ?? null, `GET ${path}`)
     throw new Error(`Graph ${res.status} on GET ${path}: ${body.slice(0, 240)}`)
   }
   const node = (await res.json()) as T & { error?: unknown }
@@ -296,7 +341,10 @@ async function graphPost<T>(path: string, form: Record<string, string>, business
     headers: routingHeaders(businessId),
   })
   const text = await res.text()
-  if (!res.ok) throw new Error(`Graph POST ${path} ${res.status}: ${text.slice(0, 300)}`)
+  if (!res.ok) {
+    if (isThrottleError(res.status, text)) throw new RateLimitedError(parseBuc(res)?.estimatedTimeToRegainAccess ?? null, `POST ${path}`)
+    throw new Error(`Graph POST ${path} ${res.status}: ${text.slice(0, 300)}`)
+  }
   return JSON.parse(text) as T
 }
 
@@ -475,6 +523,9 @@ export class LiveProvider implements DataProvider {
           50,
         )
       } catch (e) {
+        // A throttle must ABORT, not degrade — continuing would spend the
+        // little budget that's left and deepen the lockout.
+        if (e instanceof RateLimitedError) throw e
         console.warn(
           `[meridian] adcreatives pull failed for ${acct.adAccountId} — Creative Lab will fall back to placeholder ` +
             `creatives (angle/format inference unavailable). Everything else is unaffected.`,
@@ -567,7 +618,9 @@ export class LiveProvider implements DataProvider {
           return await graphGet<any>(`${acct.adAccountId}/insights`, params, acct.businessId)
         } catch (e) {
           // Re-throw invalid-field errors so withFieldFallback can drop the
-          // field; only volume refusals justify escalating to an async job.
+          // field, and throttles so the load stops; only volume refusals
+          // justify escalating to an async job.
+          if (e instanceof RateLimitedError) throw e
           if (INVALID_FIELD_RE.test((e as Error)?.message ?? '')) throw e
           console.warn(
             `[meridian] sync insights pull refused for ${acct.adAccountId} (${windowDays}d) — escalating to an async report job.`,
@@ -638,6 +691,8 @@ export class LiveProvider implements DataProvider {
             entry[key] = Number(r.reach ?? 0)
           }
         } catch (e) {
+          // Same rule as above: never keep calling into a throttle.
+          if (e instanceof RateLimitedError) throw e
           console.warn(
             `[meridian] period-reach pull failed for ${acct.adAccountId} ${key} (${b.start}→${b.end}); ` +
               `frequency for that window falls back to the additive approximation.`,

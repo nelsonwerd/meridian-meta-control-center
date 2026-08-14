@@ -226,6 +226,45 @@ describe('large-account resilience (found by real live use, 2026-08-14)', () => 
     expect(snap.insights).toHaveLength(1) // and the data actually loads
   })
 
+  it('an ad-account throttle (HTTP 400, code 17) is recognized and FAILS FAST', async () => {
+    // Meta sends this as a 400, not a 429 — the shape that slipped through before.
+    const THROTTLED = {
+      status: 400,
+      headers: { 'x-business-use-case-usage': JSON.stringify({ b1: [{ type: 'ads_insights', call_count: 100, estimated_time_to_regain_access: 42 }] }) },
+      body: { error: { code: 17, type: 'OAuthException', message: 'There have been too many calls to this ad-account. Wait a bit and try again.' } },
+    }
+    let callsAfterThrottle = 0
+    let throttled = false
+    stubGraph((url) => {
+      if (throttled) callsAfterThrottle++
+      if (/\/act_1$/.test(url.pathname)) {
+        throttled = true
+        return THROTTLED
+      }
+      return { body: { data: [] } }
+    })
+
+    const err = await new LiveProvider(ONE).loadSnapshot().catch((e) => e)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.name).toBe('RateLimitedError')
+    expect(err.retryAfterMinutes).toBe(42) // read from the BUC header
+    expect(err.message).toMatch(/rate-limiting this ad account/i)
+    expect(err.message).toMatch(/42 minute/)
+    expect(err.message).toMatch(/campaigns are unaffected/i) // reassurance, not a raw dump
+    expect(callsAfterThrottle, 'must stop calling once throttled').toBe(0)
+  })
+
+  it('a throttle during a DEGRADABLE pull still aborts (never keeps burning budget)', async () => {
+    const THROTTLED = { status: 400, body: { error: { code: 17, message: 'There have been too many calls to this ad-account.' } } }
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      // adcreatives normally DEGRADES — but not when the cause is a throttle
+      if (url.pathname.endsWith('/adcreatives')) return THROTTLED
+      return { body: { data: [] } }
+    })
+    await expect(new LiveProvider(ONE).loadSnapshot()).rejects.toThrow(/rate-limiting/i)
+  })
+
   it('Graph errors name the failing endpoint (so an operator can act on them)', async () => {
     stubGraph((url) => {
       if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
