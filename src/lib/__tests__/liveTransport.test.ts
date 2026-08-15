@@ -274,6 +274,19 @@ describe('large-account resilience (found by real live use, 2026-08-14)', () => 
     await expect(new LiveProvider(ONE).loadSnapshot()).rejects.toThrow(/adsets/)
   })
 
+  it('pulls reach for ONLY the two windows that consume it (insights CPU budget)', async () => {
+    const calls = stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      return { body: { data: [] } }
+    })
+    await new LiveProvider(ONE).loadSnapshot()
+    const reachPulls = calls.filter((c) => c.path.endsWith('/act_1/insights') && c.method === 'GET' && !c.isDaily)
+    // 7d (engine's m7.frequency) + 28d (default dashboard range). Nothing else
+    // reads frequency, and each extra window is an expensive unique-count query.
+    expect(reachPulls).toHaveLength(2)
+    expect(reachPulls.map((c) => c.spanDays).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual([7, 28])
+  })
+
   it("does NOT request the 'full' window reach (the query Meta refuses)", async () => {
     const calls = stubGraph((url) => {
       if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }

@@ -488,15 +488,23 @@ export function mapCreative(raw: RawCreative, ctx: MapContext, createdAtHint?: I
 
 export const PERIOD_KEY_LIST: PeriodKey[] = ['3d', '7d', '14d', '28d', 'prev7', 'prev14', 'full']
 
-/** The windows we actually pull TRUE de-duplicated reach for.
+/** The windows we pull TRUE de-duplicated reach for — deliberately just TWO.
  *
- *  Deliberately EXCLUDES 'full': spanning the entire history at ad-level unique
- *  counts is by far the most expensive query Meta serves — on a real account it
- *  returns error code 1 ("reduce the amount of data") — and no date preset ever
- *  requests that range (they top out at 28 days). Only a hand-picked custom
- *  full-window range would match it, and that case falls back to the labelled
- *  additive approximation, which is the documented behaviour anyway. */
-export const REACH_PERIOD_KEYS: PeriodKey[] = ['3d', '7d', '14d', '28d', 'prev7', 'prev14']
+ *  Ad-level unique-reach queries are the most expensive thing Meta serves, and
+ *  they bill against the `ads_insights` CPU budget, which is metered separately
+ *  from call count and from `ads_management`. Firing one per canonical window
+ *  (the original six, plus 'full') exhausted a real account's insights budget
+ *  on a single load — a self-inflicted rate limit.
+ *
+ *  Only these two windows have a consumer that materially needs true frequency:
+ *    · '7d'  — the ONLY window the engine reads frequency from (m7.frequency
+ *              gates the fatigue, scale, and audience-expansion rules)
+ *    · '28d' — the default dashboard range, where frequency is displayed
+ *
+ *  Nothing reads frequency from 3d / 14d / prev7 / prev14, and 'full' is never
+ *  requested by any preset. Those fall back to the labelled additive
+ *  approximation — the documented behaviour, at a third of the API cost. */
+export const REACH_PERIOD_KEYS: PeriodKey[] = ['7d', '28d']
 
 /** {since,until} for a canonical period against an explicit anchor — MUST
  *  mirror metrics.periodBounds() (which reads the app-level anchor) so the
