@@ -177,12 +177,11 @@ describe('large-account resilience (found by real live use, 2026-08-14)', () => 
     expect(snap.insights).toHaveLength(1) // recovered via the async job
   })
 
-  it('a refused adcreatives pull degrades to placeholders — dashboard still loads', async () => {
+  it('ads with only a bare creative id still resolve (inline expansion degenerate case)', async () => {
     stubGraph((url) => {
       if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
-      if (url.pathname.endsWith('/adcreatives')) return TOO_MUCH // the heaviest structure pull
       if (url.pathname.endsWith('/campaigns')) return { body: { data: [{ id: 'c1', name: 'C', effective_status: 'ACTIVE' }] } }
-      if (url.pathname.endsWith('/ads')) return { body: { data: [{ id: 'a1', name: 'Ad One', adset_id: 's1', campaign_id: 'c1', effective_status: 'ACTIVE', creative: { id: 'cr1' } }] } }
+      if (url.pathname.endsWith('/ads')) return { body: { data: [{ id: 'a1', name: 'Ad One', adset_id: 's1', campaign_id: 'c1', effective_status: 'ACTIVE', creative: { id: 'cr1' } }] } } // bare id only
       return { body: { data: [] } }
     })
     const snap = await new LiveProvider(ONE).loadSnapshot()
@@ -258,8 +257,8 @@ describe('large-account resilience (found by real live use, 2026-08-14)', () => 
     const THROTTLED = { status: 400, body: { error: { code: 17, message: 'There have been too many calls to this ad-account.' } } }
     stubGraph((url) => {
       if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
-      // adcreatives normally DEGRADES — but not when the cause is a throttle
-      if (url.pathname.endsWith('/adcreatives')) return THROTTLED
+      // the period-reach pull normally DEGRADES — but not when it's a throttle
+      if (url.pathname.endsWith('/act_1/insights') && url.searchParams.get('time_increment') !== '1') return THROTTLED
       return { body: { data: [] } }
     })
     await expect(new LiveProvider(ONE).loadSnapshot()).rejects.toThrow(/rate-limiting/i)

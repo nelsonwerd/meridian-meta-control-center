@@ -54,21 +54,27 @@ const ADSETS = {
   ],
 }
 
+/** Creatives arrive EXPANDED INLINE on each ad (`creative{id,name,...}`) —
+ *  there is no separate /adcreatives request. Ad 7004 carries only a bare
+ *  creative id, the degenerate case a real account produces. */
 const ADS = {
   data: [
-    { id: '7001', name: 'UGC testimonial video', adset_id: '8001', campaign_id: '9001', status: 'ACTIVE', effective_status: 'ACTIVE', creative: { id: '6001' }, created_time: '2026-04-02T08:00:00+0000' },
-    { id: '7002', name: '20% off promo static', adset_id: '8001', campaign_id: '9001', status: 'ACTIVE', effective_status: 'ACTIVE', creative: { id: '6002' }, created_time: '2026-06-20T08:00:00+0000' },
-    { id: '7003', name: 'Retargeting carousel', adset_id: '8002', campaign_id: '9002', status: 'ACTIVE', effective_status: 'ACTIVE', creative: { id: '6003' }, created_time: '2026-05-15T08:00:00+0000' },
-    // references a creative that /adcreatives does NOT return → placeholder path
-    { id: '7004', name: 'Legacy ad w/ missing creative', adset_id: '8003', campaign_id: '9002', status: 'ACTIVE', effective_status: 'ADSET_PAUSED', creative: { id: '6999' }, created_time: '2026-03-15T08:00:00+0000' },
-  ],
-}
-
-const CREATIVES = {
-  data: [
-    { id: '6001', name: 'UGC — real customer review', object_story_spec: { video_data: { title: 'Real results', message: 'This customer review says it all', video_id: 'v1' } } },
-    { id: '6002', name: 'Summer promo', object_story_spec: { link_data: { name: '20% off everything', message: 'Summer sale ends soon' } } },
-    { id: '6003', name: 'Bestsellers carousel', object_story_spec: { link_data: { child_attachments: [{}, {}, {}, {}] } } },
+    {
+      id: '7001', name: 'UGC testimonial video', adset_id: '8001', campaign_id: '9001', status: 'ACTIVE', effective_status: 'ACTIVE', created_time: '2026-04-02T08:00:00+0000',
+      creative: { id: '6001', name: 'UGC — real customer review', object_story_spec: { video_data: { title: 'Real results', message: 'This customer review says it all', video_id: 'v1' } } },
+    },
+    {
+      id: '7002', name: '20% off promo static', adset_id: '8001', campaign_id: '9001', status: 'ACTIVE', effective_status: 'ACTIVE', created_time: '2026-06-20T08:00:00+0000',
+      creative: { id: '6002', name: 'Summer promo', object_story_spec: { link_data: { name: '20% off everything', message: 'Summer sale ends soon' } } },
+    },
+    {
+      id: '7003', name: 'Retargeting carousel', adset_id: '8002', campaign_id: '9002', status: 'ACTIVE', effective_status: 'ACTIVE', created_time: '2026-05-15T08:00:00+0000',
+      creative: { id: '6003', name: 'Bestsellers carousel', object_story_spec: { link_data: { child_attachments: [{}, {}, {}, {}] } } },
+    },
+    {
+      id: '7004', name: 'Legacy ad, creative detail unavailable', adset_id: '8003', campaign_id: '9002', status: 'ACTIVE', effective_status: 'ADSET_PAUSED', created_time: '2026-03-15T08:00:00+0000',
+      creative: { id: '6999' },
+    },
   ],
 }
 
@@ -122,7 +128,6 @@ function graphResponse(url: URL): unknown {
   if (pathname.endsWith('/act_777/campaigns')) return CAMPAIGNS
   if (pathname.endsWith('/act_777/adsets')) return ADSETS
   if (pathname.endsWith('/act_777/ads')) return ADS
-  if (pathname.endsWith('/act_777/adcreatives')) return CREATIVES
   if (pathname.endsWith('/act_777/insights')) {
     // daily pull carries time_increment=1; period-reach pulls are summary
     return url.searchParams.get('time_increment') === '1' ? insightRows() : summaryReachRows()
@@ -223,7 +228,7 @@ describe('LiveProvider.loadSnapshot — full pipeline against a fake Graph', () 
     expect(snapshot.adById.get('7004')?.status).toBe('PAUSED')
   })
 
-  it('every ad resolves a creative (placeholder synthesized for the missing one)', () => {
+  it('every ad resolves a creative from the inline expansion (no /adcreatives call)', () => {
     for (const ad of snapshot.ads) {
       expect(snapshot.creativeById.get(ad.creativeId)).toBeDefined()
       expect(snapshot.creativeById.get(ad.creativeId)!.thumbnailGradient).toHaveLength(2)

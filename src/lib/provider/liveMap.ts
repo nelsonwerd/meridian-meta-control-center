@@ -85,7 +85,12 @@ export interface RawAd {
   campaign_id?: string
   effective_status?: string
   status?: string
-  creative?: { id?: string }
+  /** Creative fields are EXPANDED inline here (`creative{id,name,...}`) rather
+   *  than listed from /adcreatives: field expansion rides the /ads call we
+   *  already make, costs no extra requests, and returns only the creatives
+   *  actually in use — instead of paginating every creative the account has
+   *  ever had, which on a real account burned through the hourly call budget. */
+  creative?: Partial<RawCreative> & { id?: string }
   created_time?: string
 }
 

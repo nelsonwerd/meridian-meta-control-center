@@ -505,32 +505,26 @@ export class LiveProvider implements DataProvider {
       )
       const rawAds = await graphGet<RawAd>(
         `${acct.adAccountId}/ads`,
-        { fields: 'name,adset_id,campaign_id,status,effective_status,creative{id},created_time' },
+        // Creative fields expanded INLINE — see RawAd.creative. This replaces a
+        // separately paginated /adcreatives edge that listed every creative the
+        // account ever had (100+ calls on a real account, and the thing that
+        // exhausted the ads_management budget). Field expansion is free.
+        {
+          fields:
+            'name,adset_id,campaign_id,status,effective_status,created_time,' +
+            'creative{id,name,object_story_spec,asset_feed_spec,object_story_id}',
+        },
         acct.businessId,
       )
-      // Creatives are an ENHANCEMENT (angle/format inference for Creative Lab),
-      // not core data — every ad already falls back to a placeholder creative.
-      // This is also the heaviest structure pull: asset_feed_spec is a large
-      // nested object, so a creative-rich account can blow the sync limit
-      // ("reduce the amount of data", code 1). Degrade rather than deny the
-      // operator their entire dashboard. Smaller pages for the same reason.
-      let rawCreatives: RawCreative[] = []
-      try {
-        rawCreatives = await graphGet<RawCreative>(
-          `${acct.adAccountId}/adcreatives`,
-          { fields: 'name,object_story_spec,asset_feed_spec,object_story_id' },
-          acct.businessId,
-          50,
-        )
-      } catch (e) {
-        // A throttle must ABORT, not degrade — continuing would spend the
-        // little budget that's left and deepen the lockout.
-        if (e instanceof RateLimitedError) throw e
-        console.warn(
-          `[meridian] adcreatives pull failed for ${acct.adAccountId} — Creative Lab will fall back to placeholder ` +
-            `creatives (angle/format inference unavailable). Everything else is unaffected.`,
-          e,
-        )
+      // Creatives come from the inline expansion on /ads above — no separate
+      // request. De-duplicate: many ads share one creative.
+      const rawCreatives: RawCreative[] = []
+      const seenCreativeIds = new Set<string>()
+      for (const ad of rawAds) {
+        const c = ad.creative
+        if (!c?.id || seenCreativeIds.has(c.id)) continue
+        seenCreativeIds.add(c.id)
+        rawCreatives.push(c as RawCreative)
       }
 
       const mappedCampaigns = rawCampaigns.map((r) => mapCampaign(r, ctx))
