@@ -349,6 +349,13 @@ async function graphGetNode<T>(path: string, params: Record<string, string>, bus
  *  so the floor stays on the sync path and the 90-day default goes async.) */
 export const ASYNC_INSIGHTS_THRESHOLD_DAYS = 60
 
+/** ...but a sync response is really bounded by ROWS = ads × days, not by days
+ *  alone: 56 days is trivial for 20 ads and impossible for 2,000. Above this
+ *  estimate, go async DIRECTLY rather than spending a call — and rate-limit
+ *  budget — on a request we can already tell Meta will refuse. The escalation
+ *  path below still catches accounts that surprise us. */
+export const ASYNC_INSIGHTS_THRESHOLD_ROWS = 5_000
+
 export interface AsyncJobOpts {
   /** initial poll delay; grows ×1.5 capped at 12× base (tests use ~1ms) */
   baseDelayMs?: number
@@ -633,18 +640,26 @@ export class LiveProvider implements DataProvider {
         fields,
         time_range: JSON.stringify({ since, until }),
       })
-      // Long windows go through an async report job (a sync GET would time
-      // out); short pulls stay on the paginated sync path.
-      // Long windows go straight to an async report job. Shorter ones try the
-      // fast sync path first and ESCALATE to async if Meta refuses the volume
-      // ("Please reduce the amount of data you're asking for", error code 1).
-      // Account size varies by orders of magnitude, so reacting to the actual
-      // response beats guessing a day threshold that is wrong for somebody.
-      // Both paths run under withFieldFallback: a field Meta has deprecated
-      // rejects the entire request, and that must cost one metric, not the load.
+      // Big pulls go straight to an async report job; small ones take the fast
+      // sync path and ESCALATE to async if Meta refuses the volume ("Please
+      // reduce the amount of data you're asking for", error code 1). "Big" is
+      // measured in ROWS — we already know this account's ad count from the
+      // structure pull above, and rows = ads × days is what actually bounds a
+      // sync response. Guessing from days alone sends small accounts down the
+      // slow path and large ones into a refusal that costs a call we can't
+      // spare. Both paths run under withFieldFallback: a field Meta has
+      // deprecated rejects the entire request, and that must cost one metric,
+      // not the whole load.
+      const estimatedRows = rawAds.length * windowDays
+      const tooBigForSync = windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS || estimatedRows > ASYNC_INSIGHTS_THRESHOLD_ROWS
+      if (tooBigForSync) {
+        console.info(
+          `[meridian] ${acct.adAccountId}: ~${estimatedRows.toLocaleString()} insight rows (${rawAds.length} ads × ${windowDays}d) — using an async report job.`,
+        )
+      }
       const adRows = await withFieldFallback<any[]>(async (fields) => {
         const params = insightParams(fields)
-        if (windowDays > ASYNC_INSIGHTS_THRESHOLD_DAYS) {
+        if (tooBigForSync) {
           return runAsyncInsightsJob<any>(acct.adAccountId, params, acct.businessId, this.asyncOpts)
         }
         try {

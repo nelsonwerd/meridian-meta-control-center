@@ -324,6 +324,53 @@ describe('large-account resilience (found by real live use, 2026-08-14)', () => 
     expect(adFields).not.toContain('asset_feed_spec') // the one that cost too much
   })
 
+  it('a high-ad-count account goes async DIRECTLY — no doomed sync call first', async () => {
+    // rows = ads x days is what bounds a sync response. 200 ads x 56d = 11,200
+    // rows: Meta will refuse it, and finding that out costs a call the account
+    // may not have. Skip straight to the report job.
+    const ads = Array.from({ length: 200 }, (_, i) => ({ id: `a${i}`, name: `Ad ${i}`, adset_id: 's1', campaign_id: 'c1', effective_status: 'ACTIVE', creative: { id: `cr${i}` } }))
+    let syncDailyCalls = 0
+    stubGraph((url, init) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/campaigns')) return { body: { data: [{ id: 'c1', name: 'C', effective_status: 'ACTIVE' }] } }
+      if (url.pathname.endsWith('/ads')) return { body: { data: ads } }
+      if (url.pathname.endsWith('/act_1/insights')) {
+        if (init?.method === 'POST') return { body: { report_run_id: 'rr_big' } }
+        if (url.searchParams.get('time_increment') === '1') syncDailyCalls++
+        return { body: { data: [] } }
+      }
+      if (url.pathname.endsWith('/rr_big')) return { body: { async_status: 'Job Completed' } }
+      if (url.pathname.endsWith('/rr_big/insights')) return { body: { data: [{ ad_id: 'a0', date_start: '2026-08-01', spend: '9' }] } }
+      return { body: { data: [] } }
+    })
+
+    const snap = await new LiveProvider(ONE, { baseDelayMs: 1, maxPolls: 5 }).loadSnapshot()
+    expect(syncDailyCalls, 'must not spend a call proving what we already know').toBe(0)
+    expect(snap.insights).toHaveLength(1)
+  })
+
+  it('a small account still takes the cheap sync path', async () => {
+    // 3 ads x 56d = 168 rows. An async job here is 3+ calls instead of 1.
+    let syncDailyCalls = 0
+    let asyncUsed = false
+    stubGraph((url, init) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/campaigns')) return { body: { data: [{ id: 'c1', name: 'C', effective_status: 'ACTIVE' }] } }
+      if (url.pathname.endsWith('/ads')) return { body: { data: [{ id: 'a1', name: 'A', adset_id: 's1', campaign_id: 'c1', effective_status: 'ACTIVE', creative: { id: 'cr1' } }] } }
+      if (url.pathname.endsWith('/act_1/insights')) {
+        if (init?.method === 'POST') asyncUsed = true
+        if (url.searchParams.get('time_increment') === '1') {
+          syncDailyCalls++
+          return { body: { data: [{ ad_id: 'a1', date_start: '2026-08-01', spend: '4' }] } }
+        }
+      }
+      return { body: { data: [] } }
+    })
+    await new LiveProvider(ONE).loadSnapshot()
+    expect(syncDailyCalls).toBe(1)
+    expect(asyncUsed).toBe(false)
+  })
+
   it('Graph errors name the failing endpoint (so an operator can act on them)', async () => {
     stubGraph((url) => {
       if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
