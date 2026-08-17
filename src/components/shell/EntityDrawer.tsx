@@ -5,6 +5,7 @@ import { useSnapshot } from '../../app/hooks'
 import { KpiRow } from '../blocks/KpiRow'
 import { PerformanceTrendCard } from '../blocks/PerformanceTrendCard'
 import { CreativeThumb } from '../blocks/CreativeThumb'
+import { CreativePreview } from '../blocks/CreativePreview'
 import { SuggestionCard } from '../blocks/SuggestionCard'
 import { Avatar, Chip, EmptyState, SectionHeader, StatusBadge } from '../ui/primitives'
 import { adIdsForEntity, creativePlacement, insightsForAdIds, metricsForEntity, parentPath } from '../../lib/selectors'
@@ -12,7 +13,6 @@ import { previousRange, timeseries } from '../../lib/metrics'
 import { analyzeClient } from '../../lib/ai/engine'
 import { creativePerformance } from '../../lib/ai/creative'
 import { fmtCurrency, fmtDateTime, SUGGESTION_TYPE_LABEL } from '../../lib/format'
-import { cn } from '../../lib/cn'
 import type { DecisionRecord } from '../../lib/history'
 import type { EntityLevel, EntityRef, EntityStatus } from '../../lib/types'
 import type { Snapshot } from '../../lib/provider'
@@ -113,10 +113,13 @@ function DrawerInner({ entityRef, snapshot, onClose }: { entityRef: EntityRef; s
       (s) => !dismissed.has(s.id) && !applied.has(s.id) && (scope === null || scope.has(s.entityId)),
     )
 
-    // creatives in scope (ad → its one creative; higher levels → top by CPA)
+    // creatives in scope (ad → its one creative; higher levels → top by CPA).
+    // The purchases>0 gate ranks a LEADERBOARD honestly, but at ad level the
+    // creative is the subject — you still want to see what ran when it sold
+    // nothing, which is exactly when you're looking.
     const adSet = new Set(adIds)
     const creatives = creativePerformance(snapshot, resolved.clientId, range)
-      .filter((p) => p.adIds.some((id) => adSet.has(id)) && p.metrics.purchases > 0)
+      .filter((p) => p.adIds.some((id) => adSet.has(id)) && (level === 'ad' || p.metrics.purchases > 0))
       .sort((a, b) => a.metrics.cpa - b.metrics.cpa)
       .slice(0, level === 'ad' ? 1 : 4)
     // Scope the placement to ads inside THIS entity — a creative may also run
@@ -182,22 +185,28 @@ function DrawerInner({ entityRef, snapshot, onClose }: { entityRef: EntityRef; s
 
           <PerformanceTrendCard series={data.series} defaultView="efficiency" subtitle={`${data.name} · ${range.label}`} height={200} />
 
-          {data.creatives.length > 0 && data.client && (
+          {/* At ad level the creative IS the subject — show the real thing, full
+              size and playable, rather than the same small card used in a grid. */}
+          {entityRef.level === 'ad' && data.creatives.length > 0 && (
             <div>
-              <SectionHeader title={entityRef.level === 'ad' ? 'Creative' : 'Top creatives'} subtitle="Best CPA in scope" />
-              <div className={cn('mt-3 grid gap-3', entityRef.level === 'ad' ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3')}>
+              <SectionHeader title="Creative" subtitle={data.creatives[0].creative.name} />
+              <CreativePreview creative={data.creatives[0].creative} className="mt-3" />
+            </div>
+          )}
+
+          {entityRef.level !== 'ad' && data.creatives.length > 0 && data.client && (
+            <div>
+              <SectionHeader title="Top creatives" subtitle="Best CPA in scope" />
+              <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {data.creatives.map((p) => {
                   const place = data.placements.get(p.creative.id)
-                  // At ad level the drill-in target IS the open drawer, so the
-                  // card stays inert rather than pretending to go somewhere.
-                  const target = entityRef.level === 'ad' ? undefined : place?.primaryAdId
                   return (
                     <CreativeThumb
                       key={p.creative.id}
                       perf={p}
                       targetCPA={data.client!.targetCPA}
                       placement={place}
-                      onClick={target ? () => openDrawer({ level: 'ad', entityId: target }) : undefined}
+                      onClick={place?.primaryAdId ? () => openDrawer({ level: 'ad', entityId: place.primaryAdId! }) : undefined}
                     />
                   )
                 })}

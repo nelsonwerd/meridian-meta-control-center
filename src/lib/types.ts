@@ -160,6 +160,10 @@ export interface Creative {
   /** live only: the actual creative asset from Meta's CDN. Signed and expiring,
    *  so the UI must tolerate it 404ing and fall back to the gradient. */
   thumbnailUrl?: string
+  /** live only: Meta's video node id, present on video creatives. Resolving it to
+   *  a playable source costs a Graph call, so it is done ON DEMAND (see
+   *  DataProvider.resolveCreativeAsset) and never during a snapshot load. */
+  videoId?: string
   ratio: CreativeRatio
   /** present for video format */
   durationSec?: number

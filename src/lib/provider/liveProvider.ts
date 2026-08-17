@@ -7,7 +7,7 @@ import type {
   Creative,
   Insight,
 } from '../types'
-import type { ActionRequest, ActionResult, DataProvider, Snapshot } from './types'
+import type { ActionRequest, ActionResult, CreativeAsset, DataProvider, Snapshot } from './types'
 import { assembleDataset } from '../dataset/assemble'
 import {
   addDaysIso,
@@ -474,6 +474,57 @@ export class LiveProvider implements DataProvider {
     } catch (e) {
       return { ok: false, detail: `Connection failed: ${(e as Error).message}` }
     }
+  }
+
+  /** Full-resolution / playable media for ONE creative — see DataProvider.
+   *
+   *  Two reads at most, and only for the creative a human just opened:
+   *    video → GET /{video_id}?fields=source,picture,permalink_url  (source is a
+   *            direct MP4 the browser can play)
+   *    still → GET /{creative_id}?fields=…&thumbnail_width/height — the ONLY way
+   *            to get a large thumbnail for Advantage+ creatives, which expose
+   *            nothing but the 64px thumbnail_url on the /ads edge.
+   *
+   *  Never throws: a missing asset degrades to the card's own thumbnail. This
+   *  runs behind a click, and a failed preview must not surface as a page error. */
+  async resolveCreativeAsset(creative: Creative): Promise<CreativeAsset | null> {
+    const businessId = this.cfg?.accounts.find((a) => a.clientId === creative.clientId)?.businessId
+    const out: CreativeAsset = {}
+
+    if (creative.videoId) {
+      try {
+        const v = await graphGetNode<{ source?: string; picture?: string; permalink_url?: string }>(
+          creative.videoId,
+          { fields: 'source,picture,permalink_url' },
+          businessId,
+        )
+        out.videoUrl = v.source
+        out.permalinkUrl = v.permalink_url
+        if (v.picture) out.imageUrl = v.picture
+      } catch (e) {
+        // `source` is withheld for videos the token doesn't own (a partner BM's
+        // asset, say). The poster still renders — just without playback.
+        console.warn(`[meridian] no playable source for video ${creative.videoId}:`, e)
+      }
+    }
+
+    try {
+      const c = await graphGetNode<{ thumbnail_url?: string; image_url?: string }>(
+        creative.id,
+        { fields: 'thumbnail_url,image_url', thumbnail_width: '1200', thumbnail_height: '1200' },
+        businessId,
+      )
+      // image_url is the original upload, so it beats the video node's
+      // auto-generated poster when both exist; the 1200px thumbnail is the
+      // Advantage+ path, where nothing else is offered.
+      if (c.image_url) out.imageUrl = c.image_url
+      else out.imageUrl ??= c.thumbnail_url
+    } catch (e) {
+      console.warn(`[meridian] could not resolve full-size asset for creative ${creative.id}:`, e)
+    }
+
+    out.imageUrl ??= creative.thumbnailUrl
+    return out.videoUrl || out.imageUrl || out.permalinkUrl ? out : null
   }
 
   async loadSnapshot(): Promise<Snapshot> {

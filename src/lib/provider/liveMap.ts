@@ -462,16 +462,21 @@ export function mapAd(raw: RawAd, parentStatus: EntityStatus | undefined, ctx: M
   }
 }
 
-/** Best available preview image for a creative, largest first — thumbnail_url is
- *  only 64px, so it is the last resort rather than the first choice, but it is
- *  the one field present on nearly everything (Advantage+ included).
+/** Best available preview image for a creative.
+ *
+ *  Ordered by RESOLUTION, not by semantics: image_url and the story-spec assets
+ *  are the sizes the operator uploaded, while thumbnail_url is a 64px crop that
+ *  looks visibly pixelated in a card. thumbnail_url stays last because it is the
+ *  only one some creatives expose at all (Advantage+ in particular) — a blurry
+ *  card still beats an empty one, and the full-resolution asset is one click
+ *  away via resolveCreativeAsset.
  *
  *  These are signed scontent.*.fbcdn.net URLs that the BROWSER loads directly,
  *  not the proxy: they expire, and re-signing them would mean a Graph call per
  *  card. The UI treats a failed load as "no image" and shows the gradient. */
 export function creativeThumbnailUrl(raw: RawCreative): string | undefined {
   const spec = raw.object_story_spec
-  return spec?.video_data?.image_url || spec?.link_data?.picture || spec?.photo_data?.url || raw.image_url || raw.thumbnail_url || undefined
+  return raw.image_url || spec?.video_data?.image_url || spec?.link_data?.picture || spec?.photo_data?.url || raw.thumbnail_url || undefined
 }
 
 /** @param createdAtHint the earliest created_time of any ad referencing this
@@ -497,6 +502,7 @@ export function mapCreative(raw: RawCreative, ctx: MapContext, createdAtHint?: I
     // over, and the fallback when there is no asset or the URL has expired.
     thumbnailGradient: ANGLE_GRADIENTS[angle],
     thumbnailUrl: creativeThumbnailUrl(raw),
+    videoId: spec?.video_data?.video_id,
     ratio: format === 'video' ? '4:5' : '1:1',
     durationSec: undefined,
     headline,

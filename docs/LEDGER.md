@@ -57,7 +57,10 @@ ranges keep additive reach; one ad account per client; all money rendered in the
 primary account currency (mixed-currency portfolios sum numerically — real FX
 normalization is future work); creative thumbnails come straight from Meta's CDN
 in live mode and fall back to angle-keyed gradients when the signed URL has
-expired or the creative exposes no asset (demo is always the gradient); campaign
+expired or the creative exposes no asset (demo is always the gradient), with
+full-resolution stills and video playback resolved on demand when an ad is
+opened — one Graph read per creative a human actually looked at, never per
+account; carousels show their first card and link out for the rest; campaign
 kind / audience type / creative angle are honest inferences from
 names/targeting/copy, not Graph facts.
 

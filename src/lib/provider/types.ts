@@ -1,5 +1,5 @@
 import type { Dataset } from '../demo/generate'
-import type { ActionKind, EntityLevel } from '../types'
+import type { ActionKind, Creative, EntityLevel } from '../types'
 
 /* ============================================================================
    The DataProvider seam.
@@ -43,6 +43,17 @@ export interface ActionResult {
   patch?: Record<string, unknown>
 }
 
+/** The renderable asset behind a creative, resolved on demand. */
+export interface CreativeAsset {
+  /** direct MP4 the browser can play in a <video> element */
+  videoUrl?: string
+  /** full-resolution still (or the video's poster frame) */
+  imageUrl?: string
+  /** the ad's post on Facebook — the escape hatch for anything we can't render
+   *  inline, e.g. carousels and playables */
+  permalinkUrl?: string
+}
+
 export interface DataProvider {
   readonly mode: ProviderMode
   /** Load the full in-memory snapshot the app slices from. */
@@ -51,4 +62,13 @@ export interface DataProvider {
   applyAction(req: ActionRequest, snapshot: Snapshot): Promise<ActionResult>
   /** Health/credential probe — used by the Settings "connection" panel. */
   checkConnection(): Promise<{ ok: boolean; detail: string }>
+  /** Full-resolution / playable media for ONE creative.
+   *
+   *  Deliberately not part of loadSnapshot: it is a Graph call per creative, and
+   *  doing it for a whole account is precisely the pattern that exhausted the
+   *  rate-limit budget before. Called when an operator opens a single ad, so the
+   *  cost is one request per thing a human actually looked at.
+   *
+   *  Optional — demo has no real media and omits it entirely. */
+  resolveCreativeAsset?(creative: Creative): Promise<CreativeAsset | null>
 }
