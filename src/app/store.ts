@@ -13,6 +13,8 @@ import { loadThresholds, resetThresholds as applyResetThresholds, setActiveClien
 import { createConfigStore, type ClientConfig, type ClientTargets } from '../lib/config'
 import { createHistoryStore, type DecisionAction } from '../lib/history'
 import { metricsForEntity } from '../lib/selectors'
+import { loadLiveConfig } from '../lib/provider/liveProvider'
+import { configFingerprint, readSnapshotCache, writeSnapshotCache } from '../lib/cache/snapshotCache'
 import type { DateRange, EntityRef, ISODate, RangePreset, Scope, Suggestion } from '../lib/types'
 
 export interface Toast {
@@ -54,8 +56,17 @@ interface MeridianState {
   clientConfig: Record<string, ClientConfig>
   /** entity-detail drawer target (null = closed) — ephemeral UI state, not the URL */
   drawer: EntityRef | null
+  /** when the live snapshot on screen was actually pulled from Meta (null = it
+   *  is a fresh pull, or we're in demo). Drives the "stale data" affordance —
+   *  cached data is only safe if its age is visible. */
+  snapshotCachedAt: string | null
+  /** a forced refresh is in flight (distinct from `loading`, which blanks the app) */
+  refreshing: boolean
 
   init: () => Promise<void>
+  /** Spend rate-limit budget deliberately: re-pull from Meta and re-cache. This
+   *  is the ONLY path that costs Graph calls once a cache exists. */
+  refreshSnapshot: () => Promise<void>
   /** Swap demo/live provider in place + reload the snapshot — no full-page reload,
    *  so scope / range / theme survive. */
   applyProviderMode: (mode: ProviderMode) => Promise<void>
@@ -151,6 +162,30 @@ function applyConfigInPlace(snapshot: Snapshot, cfgMap: Record<string, ClientCon
   }
 }
 
+/** Everything that must happen to a snapshot before the app renders it, whether
+ *  it arrived from Graph or from the cache. Shared so the two paths cannot drift
+ *  — a cached snapshot that skipped setDataContext would slice to all-zeros. */
+async function adoptSnapshot(
+  set: (partial: Partial<MeridianState>) => void,
+  get: () => MeridianState,
+  snapshot: Snapshot,
+  cachedAt: string | null,
+) {
+  const clientConfig = await configStore.load()
+  // Anchor every date window (presets, engine lastNDays, pacing, weekly report,
+  // custom-range bounds) to THIS snapshot's "now" + history depth — demo pins
+  // the seeded anchor; live carries the real load date. Then re-derive the
+  // active range against the new anchor (a demo-anchored range would slice live
+  // data to empty, and vice versa).
+  setDataContext(snapshot.dataAnchor, snapshot.windowDays)
+  const preset = get().range.preset
+  const range = makeRange(preset === 'custom' ? '28d' : preset)
+  captureBaseTargets(snapshot) // pristine seeded targets (once per dataset)
+  applyConfigInPlace(snapshot, clientConfig) // overlay per-client target overrides
+  setActiveClientThresholds(clientConfig) // expose per-client threshold overrides to the engine
+  set({ snapshot, clientConfig, range, loading: false, refreshing: false, snapshotCachedAt: cachedAt, error: null })
+}
+
 function initialTheme(): Theme {
   const stored = localStorage.getItem('meridian.theme') as Theme | null
   return stored ?? 'dark'
@@ -174,28 +209,46 @@ export const useStore = create<MeridianState>((set, get) => ({
   dismissedSuggestionIds: new Set(),
   clientConfig: {},
   drawer: null,
+  snapshotCachedAt: null,
+  refreshing: false,
 
   async init() {
     set({ loading: true, error: null })
     loadThresholds() // apply any persisted engine-threshold overrides
     document.documentElement.setAttribute('data-theme', get().theme)
     try {
+      // LIVE: read the cache before Graph. A page load must not spend
+      // rate-limit budget — on a Limited access tier, reloading your way
+      // through a debugging session is exactly how you lock yourself out of
+      // your own ad account. Refreshing is an explicit act (refreshSnapshot).
+      if (get().providerMode === 'live') {
+        const cached = await readSnapshotCache(configFingerprint(loadLiveConfig()))
+        if (cached) {
+          await adoptSnapshot(set, get, cached.snapshot, cached.savedAt)
+          return
+        }
+      }
       const snapshot = await get().provider.loadSnapshot()
-      const clientConfig = await configStore.load()
-      // Anchor every date window (presets, engine lastNDays, pacing, weekly
-      // report, custom-range bounds) to THIS snapshot's "now" + history depth —
-      // demo pins the seeded anchor; live carries the real load date. Then
-      // re-derive the active range against the new anchor (a demo-anchored
-      // range would slice live data to empty, and vice versa).
-      setDataContext(snapshot.dataAnchor, snapshot.windowDays)
-      const preset = get().range.preset
-      const range = makeRange(preset === 'custom' ? '28d' : preset)
-      captureBaseTargets(snapshot) // pristine seeded targets (once per dataset)
-      applyConfigInPlace(snapshot, clientConfig) // overlay per-client target overrides
-      setActiveClientThresholds(clientConfig) // expose per-client threshold overrides to the engine
-      set({ snapshot, clientConfig, range, loading: false })
+      await adoptSnapshot(set, get, snapshot, null)
+      void writeSnapshotCache(snapshot, configFingerprint(loadLiveConfig()))
     } catch (e) {
       set({ error: (e as Error).message, loading: false })
+    }
+  },
+
+  async refreshSnapshot() {
+    if (get().refreshing) return
+    set({ refreshing: true, error: null })
+    try {
+      const snapshot = await get().provider.loadSnapshot()
+      await adoptSnapshot(set, get, snapshot, null)
+      void writeSnapshotCache(snapshot, configFingerprint(loadLiveConfig()))
+      get().pushToast('success', 'Refreshed from Meta.')
+    } catch (e) {
+      // Keep the cached snapshot on screen: stale data beats an empty app, and
+      // a rate-limit refusal is precisely when you most want what you already had.
+      set({ refreshing: false })
+      get().pushToast('error', (e as Error).message)
     }
   },
 

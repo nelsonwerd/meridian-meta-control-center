@@ -152,7 +152,8 @@ fields — they live in this config, editable in Settings → Targets & tuning.
 ## 3. Pull structure + insights — BUILT (2026-08-11, Graph v26.0)
 
 `LiveProvider.loadSnapshot()` is complete: per account it pulls the account
-node, `campaigns` / `adsets` / `ads` / `adcreatives` (cursor pagination), maps
+node, `campaigns` / `adsets` / `ads` (cursor pagination, with creative fields
+expanded inline on `ads` rather than a separate `adcreatives` edge), maps
 them onto the domain model (`src/lib/provider/liveMap.ts` — status
 normalization incl. `learning_stage_info` LEARNING/FAIL →
 LEARNING/LEARNING_LIMITED, CBO/ABO from budget location, legacy→ODAX
@@ -182,6 +183,55 @@ same `Dataset` shape demo uses.
   unified-attribution override params since 2025-06-10. Never request
   `7d_view`/`28d_view` (removed 2026-01-12; they return empty silently).
 - Both the proxy and the browser client back off on `X-Business-Use-Case-Usage`.
+
+## 3.1 Rate limits — the binding constraint on a real account
+
+This is the thing most likely to stop you, and it is worth understanding before
+you blame the code. Meta meters ad-account API usage in **two independent
+buckets**, and each is metered on **call count *and* CPU time** — an expensive
+query can exhaust your budget in very few requests.
+
+| | `ads_management` | `ads_insights` | System users |
+|---|---|---|---|
+| **Limited** access tier | 300 + 40 × ads / hr | 600 + 400 × ads / hr | 1 |
+| **Full** access tier | 100,000 + 40 × ads | 190,000 + 400 × ads | 10 |
+
+(Meta renamed the Marketing API tiers on 2026-05-04: Standard → **Limited**,
+Advanced → **Full**. These are *not* the same thing as a permission's Standard
+vs Advanced access level, which is a separate ladder. Verify current numbers
+against Meta's rate-limiting reference before relying on them.)
+
+Throttling arrives as **HTTP 400 with `error.code` 17 or 80000-80014**, not as a
+429, and the retry hint (`estimated_time_to_regain_access` in the
+`X-Business-Use-Case-Usage` header) is in **minutes**.
+
+**What Meridian does to stay inside the budget:**
+
+- **Snapshot caching** (`src/lib/cache/snapshotCache.ts`) — a successful live
+  load is persisted to IndexedDB and re-read on start, so a page reload costs
+  **zero** Graph calls. Refreshing is an explicit click, and the data's true age
+  is always shown in the top bar. This is the single biggest saving, because
+  reloading is the thing you do most.
+- **Row-count-based async routing** — insight pulls estimated above ~5,000 rows
+  (ads × days) go straight to an async report job instead of spending a call
+  discovering that a sync query is too large.
+- **Two reach windows, not seven** — de-duplicated reach is a CPU-expensive
+  unique-count query, so it is pulled only for the windows something actually
+  reads frequency from (7d, 28d).
+- **Creative fields expanded inline** on `ads` instead of a separately paginated
+  `adcreatives` edge (field expansion costs no extra requests).
+- **Adaptive page sizes** — a "reduce the amount of data" refusal (code 1) halves
+  the page and retries rather than failing, so no fixed page size has to be right
+  for every account size.
+- **On-demand media** — full-resolution stills and video sources are fetched only
+  when an operator opens a specific ad, and memoised for the session.
+- **Fail fast on throttle** — once rate-limited, the load aborts instead of
+  continuing to spend budget on calls that will also fail.
+
+**What you should do:** if you run more than a couple of accounts, apply for
+**Full access** (App Review + Business Verification). It raises `ads_insights`
+by roughly 300× and is the only real fix for agency-scale throughput — no amount
+of client-side optimisation substitutes for it.
 
 ## 4. Write actions
 

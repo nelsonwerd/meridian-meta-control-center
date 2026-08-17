@@ -488,6 +488,19 @@ export class LiveProvider implements DataProvider {
    *  Never throws: a missing asset degrades to the card's own thumbnail. This
    *  runs behind a click, and a failed preview must not surface as a page error. */
   async resolveCreativeAsset(creative: Creative): Promise<CreativeAsset | null> {
+    // Re-opening an ad you just looked at must be free: browsing back and forth
+    // through a shortlist is normal, and paying Graph calls for it is not.
+    const memo = this.assetMemo.get(creative.id)
+    if (memo) return memo
+    const pending = this.fetchCreativeAsset(creative)
+    this.assetMemo.set(creative.id, pending)
+    return pending
+  }
+
+  /** in-flight or resolved assets, keyed by creative id (session-scoped) */
+  private assetMemo = new Map<string, Promise<CreativeAsset | null>>()
+
+  private async fetchCreativeAsset(creative: Creative): Promise<CreativeAsset | null> {
     const businessId = this.cfg?.accounts.find((a) => a.clientId === creative.clientId)?.businessId
     const out: CreativeAsset = {}
 
