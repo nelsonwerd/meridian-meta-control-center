@@ -288,6 +288,33 @@ async function graphGet<T>(path: string, params: Record<string, string>, busines
   return out
 }
 
+/** "Please reduce the amount of data you're asking for" (code 1) is Meta saying
+ *  the RESPONSE is too big — the fix is a smaller PAGE, not a smaller window or
+ *  fewer fields. Account sizes vary by orders of magnitude, so halve the page
+ *  and retry instead of hard-coding a size that is wrong for somebody. Restarts
+ *  pagination from the beginning, which is correct: a failed pull has no
+ *  complete data to preserve. */
+async function graphGetAdaptive<T>(
+  path: string,
+  params: Record<string, string>,
+  businessId?: string,
+  startPageSize = 200,
+  minPageSize = 10,
+): Promise<T[]> {
+  let size = startPageSize
+  for (;;) {
+    try {
+      return await graphGet<T>(path, params, businessId, size)
+    } catch (e) {
+      if (e instanceof RateLimitedError) throw e // never keep calling into a throttle
+      const tooMuch = /reduce the amount of data/i.test((e as Error)?.message ?? '')
+      if (!tooMuch || size <= minPageSize) throw e
+      size = Math.max(minPageSize, Math.floor(size / 2))
+      console.warn(`[meridian] ${path}: response too large — retrying with page size ${size}.`)
+    }
+  }
+}
+
 /** Single NODE read (an object, not an edge — no pagination). Throws if the node
  *  is missing/errored so callers can't read a false success from an empty edge. */
 async function graphGetNode<T>(path: string, params: Record<string, string>, businessId?: string): Promise<T> {
@@ -493,28 +520,40 @@ export class LiveProvider implements DataProvider {
       // ---- structure: campaigns → ad sets → ads → creatives ----
       // effective_status (not bare status) is what tells the truth about
       // delivery — bare status can read ACTIVE inside a paused campaign.
-      const rawCampaigns = await graphGet<RawCampaign>(
+      const rawCampaigns = await graphGetAdaptive<RawCampaign>(
         `${acct.adAccountId}/campaigns`,
         { fields: 'name,objective,status,effective_status,daily_budget,lifetime_budget,bid_strategy,smart_promotion_type,created_time' },
         acct.businessId,
       )
-      const rawAdSets = await graphGet<RawAdSet>(
+      // targeting is a fat nested object, so this edge is a code-1 candidate on
+      // big accounts — graphGetAdaptive shrinks the page until Meta will serve it.
+      const rawAdSets = await graphGetAdaptive<RawAdSet>(
         `${acct.adAccountId}/adsets`,
         { fields: 'name,campaign_id,status,effective_status,optimization_goal,billing_event,daily_budget,lifetime_budget,targeting,learning_stage_info,created_time' },
         acct.businessId,
       )
-      const rawAds = await graphGet<RawAd>(
+      const rawAds = await graphGetAdaptive<RawAd>(
         `${acct.adAccountId}/ads`,
         // Creative fields expanded INLINE — see RawAd.creative. This replaces a
         // separately paginated /adcreatives edge that listed every creative the
         // account ever had (100+ calls on a real account, and the thing that
-        // exhausted the ads_management budget). Field expansion is free.
+        // exhausted the ads_management budget). Field expansion costs no extra
+        // requests.
+        //
+        // asset_feed_spec is deliberately NOT expanded: it is by far the
+        // largest nested object Meta returns, and 200 of them in one page blows
+        // the response-size limit (code 1, "reduce the amount of data"). It is
+        // only a FALLBACK for format detection and copy — object_story_spec is
+        // the primary source — so dropping it costs a little fidelity on
+        // Advantage+/flexible creatives and nothing else. Page size is also
+        // halved here because each row now carries a nested creative.
         {
           fields:
             'name,adset_id,campaign_id,status,effective_status,created_time,' +
-            'creative{id,name,object_story_spec,asset_feed_spec,object_story_id}',
+            'creative{id,name,object_story_spec,object_story_id}',
         },
         acct.businessId,
+        100,
       )
       // Creatives come from the inline expansion on /ads above — no separate
       // request. De-duplicate: many ads share one creative.

@@ -264,6 +264,66 @@ describe('large-account resilience (found by real live use, 2026-08-14)', () => 
     await expect(new LiveProvider(ONE).loadSnapshot()).rejects.toThrow(/rate-limiting/i)
   })
 
+  it('a page Meta calls too large is RETRIED smaller, not surfaced as a failure', async () => {
+    // Real failure, 2026-08-17: /ads carries a nested creative per row, so 200
+    // rows in one response exceeded what Meta would serve (code 1).
+    const limitsSeen: number[] = []
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/ads')) {
+        const limit = Number(url.searchParams.get('limit'))
+        limitsSeen.push(limit)
+        if (limit > 25) return TOO_MUCH // this account only serves 25 ads/page
+        return { body: { data: [{ id: 'a1', name: 'Ad One', adset_id: 's1', campaign_id: 'c1', effective_status: 'ACTIVE', creative: { id: 'cr1', name: 'Cr' } }] } }
+      }
+      if (url.pathname.endsWith('/campaigns')) return { body: { data: [{ id: 'c1', name: 'C', effective_status: 'ACTIVE' }] } }
+      return { body: { data: [] } }
+    })
+
+    const snap = await new LiveProvider(ONE).loadSnapshot()
+    expect(limitsSeen).toEqual([100, 50, 25]) // halve until Meta accepts it
+    expect(snap.ads).toHaveLength(1) // and the pull actually completes
+  })
+
+  it('gives up rather than shrinking forever when nothing works', async () => {
+    const limitsSeen: number[] = []
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/adsets')) {
+        limitsSeen.push(Number(url.searchParams.get('limit')))
+        return TOO_MUCH
+      }
+      return { body: { data: [] } }
+    })
+    await expect(new LiveProvider(ONE).loadSnapshot()).rejects.toThrow(/adsets/)
+    expect(limitsSeen).toEqual([200, 100, 50, 25, 12, 10]) // floors at 10, then stops
+  })
+
+  it('a throttle mid-shrink aborts immediately (shrinking must not burn budget)', async () => {
+    const THROTTLED = { status: 400, body: { error: { code: 17, message: 'There have been too many calls to this ad-account.' } } }
+    let seen = 0
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/adsets')) return ++seen === 1 ? TOO_MUCH : THROTTLED
+      return { body: { data: [] } }
+    })
+    await expect(new LiveProvider(ONE).loadSnapshot()).rejects.toThrow(/rate-limiting/i)
+    expect(seen, 'stops the moment it is throttled').toBe(2)
+  })
+
+  it('never asks for asset_feed_spec (the field that blew the response limit)', async () => {
+    let adFields = ''
+    stubGraph((url) => {
+      if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
+      if (url.pathname.endsWith('/ads')) adFields = url.searchParams.get('fields') ?? ''
+      return { body: { data: [] } }
+    })
+    await new LiveProvider(ONE).loadSnapshot()
+    expect(adFields).toContain('creative{') // still expanded inline — no extra call
+    expect(adFields).toContain('object_story_spec') // the field format detection needs
+    expect(adFields).not.toContain('asset_feed_spec') // the one that cost too much
+  })
+
   it('Graph errors name the failing endpoint (so an operator can act on them)', async () => {
     stubGraph((url) => {
       if (/\/act_1$/.test(url.pathname)) return { body: ACCOUNT_NODE }
