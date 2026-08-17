@@ -55,9 +55,11 @@ Known, deliberate approximations (documented in code): cross-ad reach summation
 (same approximation Meta makes below account level); non-canonical/custom date
 ranges keep additive reach; one ad account per client; all money rendered in the
 primary account currency (mixed-currency portfolios sum numerically — real FX
-normalization is future work); creative thumbnails are angle-keyed gradients
-(real media URLs expire + CSP); campaign kind / audience type / creative angle
-are honest inferences from names/targeting/copy, not Graph facts.
+normalization is future work); creative thumbnails come straight from Meta's CDN
+in live mode and fall back to angle-keyed gradients when the signed URL has
+expired or the creative exposes no asset (demo is always the gradient); campaign
+kind / audience type / creative angle are honest inferences from
+names/targeting/copy, not Graph facts.
 
 ## ⚪️ Simulated in demo (works, but not real-world)
 

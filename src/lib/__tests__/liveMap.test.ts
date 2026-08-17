@@ -5,6 +5,7 @@ import {
   adStatus,
   batchFromDate,
   classifyAngle,
+  creativeThumbnailUrl,
   ensureClientCosmetics,
   inferAudience,
   inferCampaignKind,
@@ -252,5 +253,37 @@ describe('mapInsightRow — Graph action arrays → additive Insight facts', () 
   it('actionVal returns 0 for absent types and tolerates undefined arrays', () => {
     expect(actionVal(undefined, 'omni_purchase')).toBe(0)
     expect(actionVal([], 'omni_purchase')).toBe(0)
+  })
+})
+
+describe('creativeThumbnailUrl (real assets, 2026-08-17)', () => {
+  it('prefers a full-size asset over the 64px thumbnail', () => {
+    expect(creativeThumbnailUrl({ id: 'c1', thumbnail_url: 'https://cdn/small.jpg', image_url: 'https://cdn/big.jpg' })).toBe('https://cdn/big.jpg')
+  })
+
+  it('uses the video POSTER for video creatives, not the raw thumbnail', () => {
+    const raw = {
+      id: 'c2',
+      thumbnail_url: 'https://cdn/small.jpg',
+      object_story_spec: { video_data: { title: 'T', image_url: 'https://cdn/poster.jpg' } },
+    }
+    expect(creativeThumbnailUrl(raw)).toBe('https://cdn/poster.jpg')
+  })
+
+  it('falls back through link picture then thumbnail_url', () => {
+    expect(creativeThumbnailUrl({ id: 'c3', thumbnail_url: 'https://cdn/s.jpg', object_story_spec: { link_data: { picture: 'https://cdn/pic.jpg' } } })).toBe('https://cdn/pic.jpg')
+    // Advantage+ creatives often expose nothing BUT thumbnail_url
+    expect(creativeThumbnailUrl({ id: 'c4', thumbnail_url: 'https://cdn/s.jpg' })).toBe('https://cdn/s.jpg')
+  })
+
+  it('is undefined (never an empty string) when Meta returns no asset', () => {
+    expect(creativeThumbnailUrl({ id: 'c5' })).toBeUndefined()
+    expect(creativeThumbnailUrl({ id: 'c6', thumbnail_url: '' })).toBeUndefined()
+  })
+
+  it('mapCreative carries the url through, and still sets the gradient fallback', () => {
+    const c = mapCreative({ id: 'c7', name: 'Hero', image_url: 'https://cdn/hero.jpg' }, ctx)
+    expect(c.thumbnailUrl).toBe('https://cdn/hero.jpg')
+    expect(c.thumbnailGradient).toHaveLength(2) // the backdrop must always exist
   })
 })

@@ -7,7 +7,7 @@ import { PerformanceTrendCard } from '../blocks/PerformanceTrendCard'
 import { CreativeThumb } from '../blocks/CreativeThumb'
 import { SuggestionCard } from '../blocks/SuggestionCard'
 import { Avatar, Chip, EmptyState, SectionHeader, StatusBadge } from '../ui/primitives'
-import { adIdsForEntity, insightsForAdIds, metricsForEntity, parentPath } from '../../lib/selectors'
+import { adIdsForEntity, creativePlacement, insightsForAdIds, metricsForEntity, parentPath } from '../../lib/selectors'
 import { previousRange, timeseries } from '../../lib/metrics'
 import { analyzeClient } from '../../lib/ai/engine'
 import { creativePerformance } from '../../lib/ai/creative'
@@ -34,6 +34,7 @@ function DrawerInner({ entityRef, snapshot, onClose }: { entityRef: EntityRef; s
   const range = useStore((s) => s.range)
   const dismissed = useStore((s) => s.dismissedSuggestionIds)
   const applied = useStore((s) => s.appliedSuggestionIds)
+  const openDrawer = useStore((s) => s.openDrawer)
   const panelRef = useRef<HTMLDivElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
 
@@ -118,8 +119,13 @@ function DrawerInner({ entityRef, snapshot, onClose }: { entityRef: EntityRef; s
       .filter((p) => p.adIds.some((id) => adSet.has(id)) && p.metrics.purchases > 0)
       .sort((a, b) => a.metrics.cpa - b.metrics.cpa)
       .slice(0, level === 'ad' ? 1 : 4)
+    // Scope the placement to ads inside THIS entity — a creative may also run
+    // elsewhere in the account, and counting those here would misattribute it.
+    const placements = new Map(
+      creatives.map((p) => [p.creative.id, creativePlacement(snapshot, p.adIds.filter((id) => adSet.has(id)), range)]),
+    )
 
-    return { ...resolved, client, current, previous, series, recs, creatives }
+    return { ...resolved, client, current, previous, series, recs, creatives, placements }
   }, [entityRef, snapshot, range, dismissed, applied])
 
   if (!data) return null
@@ -180,9 +186,21 @@ function DrawerInner({ entityRef, snapshot, onClose }: { entityRef: EntityRef; s
             <div>
               <SectionHeader title={entityRef.level === 'ad' ? 'Creative' : 'Top creatives'} subtitle="Best CPA in scope" />
               <div className={cn('mt-3 grid gap-3', entityRef.level === 'ad' ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3')}>
-                {data.creatives.map((p) => (
-                  <CreativeThumb key={p.creative.id} perf={p} targetCPA={data.client!.targetCPA} />
-                ))}
+                {data.creatives.map((p) => {
+                  const place = data.placements.get(p.creative.id)
+                  // At ad level the drill-in target IS the open drawer, so the
+                  // card stays inert rather than pretending to go somewhere.
+                  const target = entityRef.level === 'ad' ? undefined : place?.primaryAdId
+                  return (
+                    <CreativeThumb
+                      key={p.creative.id}
+                      perf={p}
+                      targetCPA={data.client!.targetCPA}
+                      placement={place}
+                      onClick={target ? () => openDrawer({ level: 'ad', entityId: target }) : undefined}
+                    />
+                  )
+                })}
               </div>
             </div>
           )}

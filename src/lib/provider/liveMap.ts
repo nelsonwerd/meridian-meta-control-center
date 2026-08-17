@@ -97,10 +97,14 @@ export interface RawAd {
 export interface RawCreative {
   id: string
   name?: string
+  /** small (64px) but present on almost everything, including Advantage+ */
+  thumbnail_url?: string
+  /** full-size, present on plain image creatives */
+  image_url?: string
   object_story_spec?: {
-    link_data?: { name?: string; message?: string; child_attachments?: unknown[] }
-    video_data?: { title?: string; message?: string; video_id?: string }
-    photo_data?: { caption?: string }
+    link_data?: { name?: string; message?: string; child_attachments?: unknown[]; picture?: string }
+    video_data?: { title?: string; message?: string; video_id?: string; image_url?: string }
+    photo_data?: { caption?: string; url?: string }
     template_data?: Record<string, unknown>
   }
   asset_feed_spec?: {
@@ -458,6 +462,18 @@ export function mapAd(raw: RawAd, parentStatus: EntityStatus | undefined, ctx: M
   }
 }
 
+/** Best available preview image for a creative, largest first — thumbnail_url is
+ *  only 64px, so it is the last resort rather than the first choice, but it is
+ *  the one field present on nearly everything (Advantage+ included).
+ *
+ *  These are signed scontent.*.fbcdn.net URLs that the BROWSER loads directly,
+ *  not the proxy: they expire, and re-signing them would mean a Graph call per
+ *  card. The UI treats a failed load as "no image" and shows the gradient. */
+export function creativeThumbnailUrl(raw: RawCreative): string | undefined {
+  const spec = raw.object_story_spec
+  return spec?.video_data?.image_url || spec?.link_data?.picture || spec?.photo_data?.url || raw.image_url || raw.thumbnail_url || undefined
+}
+
 /** @param createdAtHint the earliest created_time of any ad referencing this
  *  creative — /adcreatives doesn't expose a creation date, and without a real
  *  date every creative would collapse into one batch cohort. */
@@ -477,9 +493,10 @@ export function mapCreative(raw: RawCreative, ctx: MapContext, createdAtHint?: I
     name: raw.name ?? headline,
     format,
     angle,
-    // Reuse the demo's angle-keyed gradients: live thumbnails aren't fetched
-    // (media URLs expire + CSP), so the placeholder visual stays consistent.
+    // The gradient is still computed: it is the backdrop the real image loads
+    // over, and the fallback when there is no asset or the URL has expired.
     thumbnailGradient: ANGLE_GRADIENTS[angle],
+    thumbnailUrl: creativeThumbnailUrl(raw),
     ratio: format === 'video' ? '4:5' : '1:1',
     durationSec: undefined,
     headline,

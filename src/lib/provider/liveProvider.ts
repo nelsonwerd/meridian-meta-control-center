@@ -554,10 +554,13 @@ export class LiveProvider implements DataProvider {
         // the primary source — so dropping it costs a little fidelity on
         // Advantage+/flexible creatives and nothing else. Page size is also
         // halved here because each row now carries a nested creative.
+        //
+        // thumbnail_url/image_url are plain URL strings (tens of bytes), so the
+        // real creative preview costs essentially nothing on top of the above.
         {
           fields:
             'name,adset_id,campaign_id,status,effective_status,created_time,' +
-            'creative{id,name,object_story_spec,object_story_id}',
+            'creative{id,name,object_story_spec,object_story_id,thumbnail_url,image_url}',
         },
         acct.businessId,
         100,

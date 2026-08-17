@@ -153,6 +153,42 @@ export function parentPath(ds: Dataset, level: EntityLevel, entityId: string): s
   return '' // campaign name IS the entity name; client/account have no in-feed parent
 }
 
+/** Where a creative actually runs, plus the single best ad to drill into.
+ *
+ *  A creative is routinely shared across several ads, so the label never names
+ *  one ad when there are more — it says how many. The drill-in target is the
+ *  highest-SPEND ad rather than the first in the list: when an operator clicks a
+ *  creative they mean "show me where this money went", and an arbitrary pick can
+ *  land on a $0 duplicate that explains nothing. */
+export function creativePlacement(
+  ds: Dataset,
+  adIds: string[],
+  range: DateRange,
+): { label: string; sub?: string; primaryAdId?: string } {
+  const ads = adIds.map((id) => ds.adById.get(id)).filter((a): a is NonNullable<typeof a> => Boolean(a))
+  if (ads.length === 0) return { label: 'No live ad in this window' }
+
+  let primary = ads[0]
+  let best = -1
+  for (const ad of ads) {
+    const spend = filterByRange(ds.insightsByAd.get(ad.id) ?? [], range).reduce((s, r) => s + r.spend, 0)
+    if (spend > best) {
+      best = spend
+      primary = ad
+    }
+  }
+
+  if (ads.length === 1) {
+    return { label: primary.name, sub: parentPath(ds, 'ad', primary.id) || undefined, primaryAdId: primary.id }
+  }
+  const campaigns = new Set(ads.map((a) => a.campaignId))
+  const sub =
+    campaigns.size === 1
+      ? (ds.campaignById.get(primary.campaignId)?.name ?? undefined)
+      : `${campaigns.size} campaigns`
+  return { label: `${ads.length} ads`, sub, primaryAdId: primary.id }
+}
+
 /** Display name for any entity, resolved from the live snapshot at render time. The
  *  decision ledger stores only ids (no denormalized name), so the Activity panel
  *  resolves names here. Returns '' if the id no longer resolves in the current mode. */

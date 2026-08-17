@@ -6,7 +6,7 @@ import { HBars, type HBarItem } from '../components/charts/HBars'
 import { Avatar, EmptyState, Segmented, SectionHeader } from '../components/ui/primitives'
 import { useSnapshot } from '../app/hooks'
 import { useStore } from '../app/store'
-import { clientsForScope } from '../lib/selectors'
+import { clientsForScope, creativePlacement } from '../lib/selectors'
 import { creativeCohorts, creativePerformance, nextBatchPlan } from '../lib/ai/creative'
 import { fmtCurrency, fmtNumber, fmtPercent } from '../lib/format'
 import { cn } from '../lib/cn'
@@ -20,6 +20,7 @@ export function CreativeLab() {
   const snapshot = useSnapshot()!
   const scope = useStore((s) => s.scope)
   const range = useStore((s) => s.range)
+  const openDrawer = useStore((s) => s.openDrawer)
 
   const scopeClients = clientsForScope(snapshot, scope)
   const initial = scope.kind === 'client' ? scope.clientId : scopeClients[0]?.id
@@ -40,7 +41,10 @@ export function CreativeLab() {
       else if (p.diagnosis === 'fatigued') counts.fatigued++
       else if (p.diagnosis === 'hook_weak' || p.diagnosis === 'body_weak' || p.diagnosis === 'convert_weak') counts.weak++
     })
-    return { perf, cohorts, plan, counts }
+    // A creative on its own is un-actionable — you need to know which ad carries
+    // it before you can do anything about it. Resolved once here, not per card.
+    const placements = new Map(perf.map((p) => [p.creative.id, creativePlacement(snapshot, p.adIds, range)]))
+    return { perf, cohorts, plan, counts, placements }
   }, [snapshot, client, range, dim])
 
   if (!client || !data) return <EmptyState title="No client selected" />
@@ -174,12 +178,20 @@ export function CreativeLab() {
         </div>
         {gallery.length ? (
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-            {gallery.map((p) => (
-              <div key={p.creative.id} className="space-y-2">
-                <CreativeThumb perf={p} targetCPA={client.targetCPA} />
-                <p className="px-0.5 text-2xs leading-relaxed text-ink-subtle line-clamp-2">{p.diagnosisDetail}</p>
-              </div>
-            ))}
+            {gallery.map((p) => {
+              const place = data.placements.get(p.creative.id)
+              return (
+                <div key={p.creative.id} className="space-y-2">
+                  <CreativeThumb
+                    perf={p}
+                    targetCPA={client.targetCPA}
+                    placement={place}
+                    onClick={place?.primaryAdId ? () => openDrawer({ level: 'ad', entityId: place.primaryAdId! }) : undefined}
+                  />
+                  <p className="px-0.5 text-2xs leading-relaxed text-ink-subtle line-clamp-2">{p.diagnosisDetail}</p>
+                </div>
+              )
+            })}
           </div>
         ) : (
           <EmptyState title="No creatives match" />

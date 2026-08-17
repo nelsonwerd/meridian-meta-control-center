@@ -154,8 +154,12 @@ export interface Creative {
   name: string
   format: CreativeFormat
   angle: CreativeAngle
-  /** demo-only: two hex stops used to render a placeholder thumbnail */
+  /** two hex stops used to render the thumbnail when no real asset is available
+   *  (always, in demo) and as the backdrop a real image loads over */
   thumbnailGradient: [string, string]
+  /** live only: the actual creative asset from Meta's CDN. Signed and expiring,
+   *  so the UI must tolerate it 404ing and fall back to the gradient. */
+  thumbnailUrl?: string
   ratio: CreativeRatio
   /** present for video format */
   durationSec?: number
